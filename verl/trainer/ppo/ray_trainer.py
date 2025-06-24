@@ -1173,7 +1173,21 @@ class RayPPOTrainer:
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
+                train_gen_file = os.path.join(self.config.trainer.default_local_dir, "train_gen.txt")
+                os.makedirs(os.path.dirname(train_gen_file), exist_ok=True)
 
+                with open(train_gen_file, "a") as fout:
+                    # need to construct a line per generation? or one per step? I think one per step is simple and conveys something useful.
+                    # how do I convert all the message objects to dicts whereever they are in the nested dict? I could just do a discusting tree map code myself. its not so bad, but I don't want to.
+                    for key in batch.non_tensor_batch:
+                        batch.non_tensor_batch[key] = list(batch.non_tensor_batch[key])
+                    if "messages" in batch.non_tensor_batch:
+                        new_messages = []
+                        for messages in batch.non_tensor_batch['messages']:
+                            new_messages.append({"messages": [m.dict() for m in messages['messages']]})
+                        batch.non_tensor_batch['messages'] = new_messages
+                    fout.write(json.dumps(batch.non_tensor_batch, indent="  ") + "\n")
+                # log everything in this run to the output for this run.
                 progress_bar.update(1)
                 self.global_steps += 1
 

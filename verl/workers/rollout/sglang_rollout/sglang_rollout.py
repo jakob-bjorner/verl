@@ -849,7 +849,11 @@ class SGLangRollout(BaseRollout):
             tool_reward_tasks.append(calc_reward_and_release_fn(name, tool))
         tool_reward_scores = await asyncio.gather(*tool_reward_tasks)
         tool_reward_scores = dict(tool_reward_scores)
-        all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
+        if self.interaction is not None:
+            all_rewards = {"interaction_reward": [await self.interaction.calculate_score(_req.request_id)]} 
+        else:
+            all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
+        # all rewards other than this don't matter anyway for combo lock environment, with GRPO especially. Outcome rewards are it.
         _req.finalize(self.tokenizer, all_rewards, finish_reason_type)
 
         return _req

@@ -198,11 +198,18 @@ class AsyncRolloutRequest(BaseModel):
     ) -> None:
         self.state = AsyncRolloutRequestStateEnum.COMPLETED
         self.reward_scores = reward_scores
+        # print(self.enable_tokenization_sanity_check)
+        # breakpoint() # check tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True), see if it removes thinking. like qwq 32 did in the docs.
         if self.enable_tokenization_sanity_check:
             full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True)
             if self.input_ids != full_tokens:
+                # print("AAAAAAA"*10)
+                # print(tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False))
+                # print(tokenizer.decode(self.input_ids))
                 logger.warning("Inconsistent training and inference tokenization detected. This may lead to unexpected behavior during training. Please review your chat template to determine if this is intentional. For more information, refer to the multiturn README.md.")
                 logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids, skip_special_tokens=False)}")
+                # breakpoint()
+                # this seems to happen because it reaches the max len. will ignore.
 
         # In case we failed to generate the assistant message and the generation prompt ids were already added to input_ids, remove them from the end of input_ids
         if self.input_ids[-len(self.generation_prompt_ids) :] == self.generation_prompt_ids:
@@ -215,6 +222,8 @@ class AsyncRolloutRequest(BaseModel):
         if finish_reason_type == FinishReasonTypeEnum.STOP:
             pass
         elif finish_reason_type == FinishReasonTypeEnum.LENGTH:
+            # if we finished early because of the lenght, we should punish the trajectory which ran out of length. And we should dis incentivise it slightly more than just not getting the sequence.
+            # I kind of want to define the loss value inside the interaction object tho. Doesn't feel right to just have the number laying somewhere outside.
             pass
         else:
             raise ValueError(f"Unsupported finalize finish reason type: {finish_reason_type}")

@@ -1,0 +1,3 @@
+interaction:
+  - class_name: "verl.interactions.combolock_interaction.ComboLockInteraction"
+    config: {}

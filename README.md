@@ -1,3 +1,16 @@
+## getting started (Jakob)
+```bash
+conda create -n env-v3 python=3.10.18
+pip install --upgrade pip
+pip install -e ".[sglang]"
+# have to do the following because we have old ubuntu 2020 massive L. https://github.com/Dao-AILab/flash-attention/issues/1708
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+pip install flash-attn==2.7.4.post1 --no-build-isolation
+# for debugging ray with vscode ray debugger
+pip install debugpy
+```
+
+
 <div align="center">
  👋 Hi, everyone! 
     verl is a RL training library initiated by <b>ByteDance Seed team</b> and maintained by the verl community.

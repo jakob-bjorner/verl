@@ -115,3 +115,41 @@ class NaiveRewardManager:
             }
         else:
             return reward_tensor
+
+# Jakob make class for incorperating tool call reward_scores
+@register("multiturn")
+class MultiTurnRewardManager(NaiveRewardManager):
+    def __call__(self, data: DataProto, return_dict=False):
+        default_returns = super().__call__(data, return_dict)
+        if isinstance(default_returns, dict):
+            reward_tensor = default_returns['reward_tensor']
+        else:
+            reward_tensor = default_returns
+        # get the reward from reward scores, and map them onto the sequence in the last valid position like 
+        # the naive reward manager above for now. More complicated things may be done later if necessary.
+        reward_scores = data.non_tensor_batch['reward_scores'] 
+        # this could be for every tool call or for every assistant turn. 
+        # for now I will just sum them. not extremely general, 
+        # but should work in short term.
+        already_print_data_sources = {}
+        for i in range(len(data)):
+            data_item = data[i]  # DataProtoItem
+            prompt_ids = data_item.batch["prompts"]
+            prompt_length = prompt_ids.shape[-1]
+            valid_response_length = data_item.batch["attention_mask"][prompt_length:].sum()
+            
+            assert len(reward_scores[i]) >= 1, "Must have at least one reward."
+
+            reward = sum(sum(list_of_rewards) for list_of_rewards in reward_scores[i].values())
+            reward_tensor[i, valid_response_length - 1] += reward # add.
+
+            data_source = data_item.non_tensor_batch[self.reward_fn_key]
+
+            if data_source not in already_print_data_sources:
+                already_print_data_sources[data_source] = 0
+
+            if already_print_data_sources[data_source] < self.num_examine:
+                already_print_data_sources[data_source] += 1
+                print("[score from tool/interaction]", reward)
+        return default_returns
+        
