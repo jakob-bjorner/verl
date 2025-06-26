@@ -97,7 +97,7 @@ class AsyncRolloutRequest(BaseModel):
     metrics: Dict[str, List[Any]] = {}
 
     use_inference_chat_template: bool
-    force_thinking: bool
+    force_thinking: str
     enable_tokenization_sanity_check: bool
     generation_prompt_ids: List[int]
     base_conv_wo_gen_prompt_end_pos: int
@@ -127,7 +127,7 @@ class AsyncRolloutRequest(BaseModel):
         values["prompt_ids"], values["prompt_attention_mask"] = values["input_ids"], values["attention_mask"]
         values["position_ids"] = values["prompt_position_ids"] = compute_position_id_with_mask(torch.tensor(values["attention_mask"])).tolist()
         values["loss_mask"] = values["prompt_loss_mask"] = [0] * len(values["input_ids"])
-        values["generation_prompt_ids"] = values["input_ids"][len(tokens_without_prompt) :]
+        values["generation_prompt_ids"] = values["input_ids"][len(tokens_without_prompt) :] 
         values["base_conv_wo_gen_prompt_end_pos"] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=tools, add_generation_prompt=False, tokenize=False))
         values["base_conv_with_gen_prompt_end_pos"] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=tools, add_generation_prompt=True, tokenize=False))
         return values
@@ -146,14 +146,31 @@ class AsyncRolloutRequest(BaseModel):
             {len(self.attention_mask)=}, {len(self.position_ids)=}, {len(self.loss_mask)=}"""
 
     def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer) -> list[int]:
-        generation_prompt_ids = [] if self.input_ids[-len(self.generation_prompt_ids) :] == self.generation_prompt_ids else self.generation_prompt_ids
-        if generation_prompt_ids:
-            self._update_input_ids(generation_prompt_ids, attention_mask=True, loss_mask=False)
+        if self.force_thinking:
+            thought_prompt_ids = tokenizer.encode(self.force_thinking)
+            combined_generation_prompt_ids = self.generation_prompt_ids + thought_prompt_ids
+            temp_generation_prompt_ids = []
+            # check if it ends in self.generation_prompt_ids, and if it does, then just add the lets think step by step, but if not, check if it ends in  both already, but if not then add both.
+            if self.input_ids[-len(self.generation_prompt_ids) :] == self.generation_prompt_ids:
+                temp_generation_prompt_ids = thought_prompt_ids
+            elif self.input_ids[-len(combined_generation_prompt_ids) :] == combined_generation_prompt_ids:
+                temp_generation_prompt_ids = []
+            else:
+                temp_generation_prompt_ids = combined_generation_prompt_ids
+            self._update_input_ids(temp_generation_prompt_ids, attention_mask=True, loss_mask=False)
+        else:
+            temp_generation_prompt_ids = self.generation_prompt_ids
+            generation_prompt_ids = [] if self.input_ids[-len(temp_generation_prompt_ids) :] == temp_generation_prompt_ids else temp_generation_prompt_ids
+            if generation_prompt_ids:
+                self._update_input_ids(generation_prompt_ids, attention_mask=True, loss_mask=False)
         # check if there is some generation postfix, will this conflict with generation_prompt_ids check? 
         # yeah its a bit strange. In finalize it seems to be important, but I don't understand why. 
         # Will ignore for now, and see if it matters later.
+        # this may be being called twice, so I should check in the same way as above if the generation is already present.
         if self.force_thinking:
-            self._update_input_ids(tokenizer.encode("Let's think step by step"), attention_mask=True, loss_mask=False)
+            temp_thinking_ids = tokenizer.encode(self.force_thinking)
+            temp_thinking_ids = [] if self.input_ids[-len(temp_thinking_ids) :] == temp_thinking_ids else temp_thinking_ids
+            self._update_input_ids(temp_thinking_ids, attention_mask=True, loss_mask=False)
 
         if self.use_inference_chat_template:
             return tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=True, tokenize=True)
@@ -219,11 +236,12 @@ class AsyncRolloutRequest(BaseModel):
                 # this seems to happen because it reaches the max len. will ignore.
 
         # In case we failed to generate the assistant message and the generation prompt ids were already added to input_ids, remove them from the end of input_ids
-        if self.input_ids[-len(self.generation_prompt_ids) :] == self.generation_prompt_ids:
-            self.input_ids = self.input_ids[: -len(self.generation_prompt_ids)]
-            self.attention_mask = self.attention_mask[: -len(self.generation_prompt_ids)]
-            self.position_ids = self.position_ids[: -len(self.generation_prompt_ids)]
-            self.loss_mask = self.loss_mask[: -len(self.generation_prompt_ids)]
+        temp_generation_prompt_ids = self.generation_prompt_ids + (tokenizer.encode(self.force_thinking) if self.force_thinking else [])
+        if self.input_ids[-len(temp_generation_prompt_ids) :] == temp_generation_prompt_ids:
+            self.input_ids = self.input_ids[: -len(temp_generation_prompt_ids)]
+            self.attention_mask = self.attention_mask[: -len(temp_generation_prompt_ids)]
+            self.position_ids = self.position_ids[: -len(temp_generation_prompt_ids)]
+            self.loss_mask = self.loss_mask[: -len(temp_generation_prompt_ids)]
 
         self.response_ids = self.input_ids[len(self.prompt_ids) :]
         if finish_reason_type == FinishReasonTypeEnum.STOP:

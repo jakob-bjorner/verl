@@ -524,7 +524,7 @@ actor_rollout_ref:
       # - When set to False, the token ids recorded for training are used instead; unlike the default chat template, these always include the model's full output,
       #   which may contain additional content such as reasoning content. This maintains the consistency between training and rollout, but it will lead to longer prompts.
       use_inference_chat_template: False
-      force_thinking: False # jakob added config to add "Let's think step by step" to prefix assistant messages.
+      force_thinking: "" # jakob added config to add "Let's think step by step" to prefix assistant messages.
       # Tokenization is performed turn by turn and the resulting token ids are concatenated to form the full conversation.
       # To ensure this matches the result of tokenizing the entire conversation at once, a sanity check is run at the end of each multi-turn rollout to compare the two sets of token ids.
       # Some models are known to produce different tokenization results when tokenizing turn by turn vs. all at once. aThis behavior has already been validated for them.

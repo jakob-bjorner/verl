@@ -8,7 +8,7 @@ unset ROCR_VISIBLE_DEVICES
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/examples/sglang_multiturn/config"
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-512}
-MINI_BATCH_SIZE=${TRAIN_BATCH_SIZE:-512}
+MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-$TRAIN_BATCH_SIZE}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-8}
 OFFLOAD=${OFFLOAD:-False}
 GPUS=${GPUS:-8}
@@ -17,13 +17,15 @@ B=${B:-3}
 RAY_DEBUG=${RAY_DEBUG:-0}
 DEBUG=${DEBUG:-""}
 DSET=${DSET:-"interaction"}
-FORCE_THINKING=${FORCE_THINKING:-"false"}
+FORCE_THINKING=${FORCE_THINKING:-""}
 EPOCHS=${EPOCHS:-15}
 # DEBUG=miss GPUS=2 MICRO_BATCH_SIZE=4 CUDA_VISIBLE_DEVICES="2,3" B=3 MINI_BATCH_SIZE=512 N_ROLLOUT=8 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_think B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=belief_no_reinstruct2 DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=thought_force FORCE_THINKING=true DSET=interaction B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=thought_force FORCE_THINKING="Let's think step by step" DSET=interaction B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=thought_force2 FORCE_THINKING="Let's think step by step before giving the query." DSET=interaction B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." DSET=interaction_simple_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -50,11 +52,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=$OFFLOAD \
     +actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=sglang \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.n=$N_ROLLOUT \
-    actor_rollout_ref.rollout.multi_turn.force_thinking=$FORCE_THINKING \
+    "actor_rollout_ref.rollout.multi_turn.force_thinking='$FORCE_THINKING'" \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.ref.fsdp_config.param_offload=$OFFLOAD \
     algorithm.use_kl_in_reward=False \
