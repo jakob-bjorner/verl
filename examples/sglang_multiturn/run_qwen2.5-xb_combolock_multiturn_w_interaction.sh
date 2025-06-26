@@ -16,7 +16,14 @@ N_ROLLOUT=${N_ROLLOUT:-8}
 B=${B:-3}
 RAY_DEBUG=${RAY_DEBUG:-0}
 DEBUG=${DEBUG:-""}
+DSET=${DSET:-"interaction"}
+FORCE_THINKING=${FORCE_THINKING:-"false"}
+EPOCHS=${EPOCHS:-15}
 # DEBUG=miss GPUS=2 MICRO_BATCH_SIZE=4 CUDA_VISIBLE_DEVICES="2,3" B=3 MINI_BATCH_SIZE=512 N_ROLLOUT=8 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DSET=interaction_think B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=belief_no_reinstruct2 DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=thought_force FORCE_THINKING=true DSET=interaction B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -24,7 +31,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.max_prompt_length=1024 \
-    data.max_response_length=$((1024 * 2)) \
+    data.max_response_length=$((1024 * 4)) \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
@@ -47,21 +54,22 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name=sglang \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.n=$N_ROLLOUT \
+    actor_rollout_ref.rollout.multi_turn.force_thinking=$FORCE_THINKING \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.ref.fsdp_config.param_offload=$OFFLOAD \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl-tests' \
-    trainer.experiment_name=qwen2.5-${B}b_function_rm-combolock-sgl-multi-w-interaction-n$N_ROLLOUT-1-$DEBUG \
+    trainer.experiment_name=qwen2.5-${B}b_function_rm-combolock-sgl-multi-w-$DSET-n$N_ROLLOUT-2-$DEBUG \
     trainer.n_gpus_per_node=$GPUS \
     trainer.nnodes=1 \
     trainer.log_val_generations=10 \
     trainer.save_freq=20 \
     trainer.test_freq=5 \
-    data.train_files=/nas/ucb/jbjorner3/data/multi_turn_combo_lock_interaction/train.parquet \
-    data.val_files=/nas/ucb/jbjorner3/data/multi_turn_combo_lock_interaction/test.parquet \
+    data.train_files=/nas/ucb/jbjorner3/data/multi_turn_combo_lock_$DSET/train.parquet \
+    data.val_files=/nas/ucb/jbjorner3/data/multi_turn_combo_lock_$DSET/test.parquet \
     actor_rollout_ref.rollout.multi_turn.interaction_config_path="$PROJECT_DIR/examples/sglang_multiturn/config/interaction_config/combolock_interaction_config.yaml" \
     reward_model.reward_manager=multiturn \
     +custom_reward_function.path=$PROJECT_DIR/verl/utils/reward_score/multiturn.py \
-    trainer.total_epochs=15 $@
+    trainer.total_epochs=$EPOCHS $@

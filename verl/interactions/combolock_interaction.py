@@ -23,6 +23,7 @@ from verl.utils.reward_score import gsm8k
 
 # special import requires installing the optimal_explorer package for the environments.
 from optimal_explorer.mdps.combination_lock import CombinationLock
+from optimal_explorer.strategies.combination_lock.prompting import process_guess_msg
 
 from .base import BaseInteraction
 
@@ -41,28 +42,20 @@ class ComboLockInteraction(BaseInteraction):
         super().__init__(config)
         self._instance_dict = {}
 
-    async def start_interaction(self, instance_id: Optional[str], combination_length: int, max_attempts: int, vocab: str, ground_truth: Tuple[str], **kwargs) -> str:
+    async def start_interaction(self, instance_id: Optional[str], combination_length: int, max_attempts: int, vocab: str, ground_truth: Tuple[str], format: str, **kwargs) -> str:
         if instance_id is None:
             instance_id = str(uuid4())
         env = CombinationLock(combination_length, max_attempts, vocab)
         env.reset()
         env.target_combination = "".join(map(str, ground_truth))
-        self._instance_dict[instance_id] = env
+        self._instance_dict[instance_id] = {"env": env, "format": format}
+        
         return instance_id
 
     async def generate_response(self, instance_id: str, messages: List[Dict[str, Any]], **kwargs) -> Tuple[bool, str, float, dict]:
-        # print(messages)
-
-        mdp = self._instance_dict[instance_id]
+        mdp = self._instance_dict[instance_id]['env']
         content = messages[-1]['content'] # I assume the last message given will be the assistant waiting for a user response?
-        remove_list = ["**", "</Answer>", "</answer>", "<Answer>", "<answer>", "</Ans>", "</ans>", "<Ans>", "<ans>",]
-        def rem_list_from_str(s: str):
-            if s.endswith("**"):
-                s = s[:-2]
-            for rm_str in remove_list:
-                s = s.replace(rm_str, "")
-            return s
-        guess = ''.join(c for c in rem_list_from_str(content) if c in mdp.vocab)[-mdp.combination_length:].lower()
+        guess = process_guess_msg(content, mdp.vocab, mdp.combination_length)
         if not mdp._is_valid_guess(guess):
             mdp.current_attempt += 1
             if mdp.current_attempt == mdp.max_attempts:
@@ -75,18 +68,36 @@ class ComboLockInteraction(BaseInteraction):
         for i, (g, f) in enumerate(zip(guess, info['feedback'])):
             position = i + 1
             if f == 0: 
-                str_response_in_tool_call += f"\n{g} is not in digit{position}, and is not in the lock"
+                str_response_in_tool_call += f"\n{g} is not in the lock"
             elif f == 1: 
-                str_response_in_tool_call += f"\n{g} is not in digit{position}, but is in the lock"
+                str_response_in_tool_call += f"\n{g} is not in Position {position}, but is in the lock"
             else: # f == 2
-                str_response_in_tool_call += f"\n{g} is in digit{position}!"
-        if done:
+                str_response_in_tool_call += f"\n{g} is in Position {position}!"
+        if self._instance_dict[instance_id]['format'] == "interaction_belief":
+            str_response_in_tool_call += ""
+            # str_response_in_tool_call += ("\nNow update your beliefs and make your next query to the lock."
+            #                             " Knowledge in your beliefs must only be updated but can never be discarded,"
+            #                             " forgotten, or removed. Do not say anything about which information is new"
+            #                             " and updated or old and remains the same.\n"
+            #                             "Please format your response as: <Update>Any step-by-step"
+            #                             " thinking to update your latest beliefs about the code with the latest"
+            #                             " feedback.</Update><Beliefs>Your new beliefs</Beliefs><Think>Any step-by-step"
+            #                             " thinking to determine what the next query should be based"
+            #                             f" on your beliefs</Think><Action>Your query to the lock ({mdp.combination_length} characters, all different)</Action>")
+        elif self._instance_dict[instance_id]['format'] == "interaction_think":
+            str_response_in_tool_call += ""
+            # str_response_in_tool_call += ("\nNow make your next query to the lock. Please format your"
+            #                              " response as: <think> Any step-by-step thinking"
+            #                              " to determine what the next query should be </think> <answer> Your query"
+            #                              f" to the lock ({mdp.combination_length} characters, all different) </answer>")
+        if done: 
             reward = mdp.get_trajectory_score()
         return done, str_response_in_tool_call, reward, {}
-
+    def get_attempts(self, instance_id: str) -> int:
+        return self._instance_dict[instance_id]['env'].current_attempt
     async def calculate_score(self, instance_id: str, **kwargs) -> float:
         # this is used in  sglang_rollout.py, and we ignore the step level reward to account for early terminating sequences.
-        return self._instance_dict[instance_id].get_trajectory_score() 
+        return self._instance_dict[instance_id]['env'].get_trajectory_score() 
         # the user per interaction score is used instead.
         # return 0.0
 

@@ -90,12 +90,14 @@ class AsyncRolloutRequest(BaseModel):
     prompt_loss_mask: List[int]
     response_loss_mask: List[int]
     reward_scores: Dict[str, float]
+    to_log_stats: Dict[str, Any]
     max_prompt_len: int
     max_response_len: int = 8192
     max_model_len: int = 32768
     metrics: Dict[str, List[Any]] = {}
 
     use_inference_chat_template: bool
+    force_thinking: bool
     enable_tokenization_sanity_check: bool
     generation_prompt_ids: List[int]
     base_conv_wo_gen_prompt_end_pos: int
@@ -147,6 +149,11 @@ class AsyncRolloutRequest(BaseModel):
         generation_prompt_ids = [] if self.input_ids[-len(self.generation_prompt_ids) :] == self.generation_prompt_ids else self.generation_prompt_ids
         if generation_prompt_ids:
             self._update_input_ids(generation_prompt_ids, attention_mask=True, loss_mask=False)
+        # check if there is some generation postfix, will this conflict with generation_prompt_ids check? 
+        # yeah its a bit strange. In finalize it seems to be important, but I don't understand why. 
+        # Will ignore for now, and see if it matters later.
+        if self.force_thinking:
+            self._update_input_ids(tokenizer.encode("Let's think step by step"), attention_mask=True, loss_mask=False)
 
         if self.use_inference_chat_template:
             return tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=True, tokenize=True)

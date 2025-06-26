@@ -732,6 +732,10 @@ class SGLangRollout(BaseRollout):
 
         # Update with any additional kwargs
         request_sampling_params.update(kwargs)
+        # run success, completion, and # attempts
+        # number of tokens in the assistant messages
+        tokens_per_assistant_message = []
+        run_completion = False
 
         while current_turns < self.config.multi_turn.max_assistant_turns:
             if _req.state == AsyncRolloutRequestStateEnum.PENDING:
@@ -766,6 +770,8 @@ class SGLangRollout(BaseRollout):
                     finish_reason_type = FinishReasonTypeEnum.LENGTH
                     break
                 output = await self._handle_engine_call(_req, request_sampling_params)
+                # print('output', output) # this for seeing if I can compute the number of generated tokens easily.
+                tokens_per_assistant_message.append(output['meta_info']['completion_tokens']) # this is characters right now, but want to make it tokens eventually.
                 content = output["text"]
                 finish_reason_type = FinishReasonTypeEnum.from_str(output["meta_info"]["finish_reason"]["type"])
                 current_turns += 1
@@ -823,6 +829,7 @@ class SGLangRollout(BaseRollout):
                 should_terminate_sequence, content, reward, metrics = await self.interaction.generate_response(_req.request_id, messages, **_req.interaction_kwargs)
                 user_turn_rewards.append(reward)
                 if should_terminate_sequence:
+                    run_completion = True
                     finish_reason_type = FinishReasonTypeEnum.STOP
                     _req.state = AsyncRolloutRequestStateEnum.COMPLETED
                     break
@@ -854,6 +861,9 @@ class SGLangRollout(BaseRollout):
         else:
             all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
         # all rewards other than this don't matter anyway for combo lock environment, with GRPO especially. Outcome rewards are it.
+        # this is very specific to combo lock with the defined rewards of anything above zero meaning that the correct thing was eventually guessed.
+        _req.to_log_stats = {"tokens_per_assistant_message": tokens_per_assistant_message, "run_success": all_rewards['interaction_reward'][0] > 0, "run_attempts": self.interaction.get_attempts(_req.request_id), "run_completion": run_completion}
+        
         _req.finalize(self.tokenizer, all_rewards, finish_reason_type)
 
         return _req
@@ -930,6 +940,10 @@ class SGLangRollout(BaseRollout):
         prompt_loss_mask, response_loss_mask = [], []
         messages = []
         reward_scores = []
+        # Jakob just support something generic so I can log thing in the multi turn setting. 
+        # Like attempts, attempts when successful, fraction unsuccessful, fraction incomplete, (should log per run success, completion, and # attempts, and synthesize these numbers later.)
+        # tokens generated per assistant call. (should log just the number of tokens in the assistant messages.)
+        to_log_stats = []
         for req in sorted_output_req_list:
             assert req.state == AsyncRolloutRequestStateEnum.COMPLETED, f"Request {req.request_id} is not completed"
             assert len(req.input_ids) == len(req.attention_mask) == len(req.position_ids) == len(req.loss_mask), f"""Request {req.request_id} has different length of 
@@ -961,6 +975,7 @@ class SGLangRollout(BaseRollout):
             response_loss_mask.append(torch.tensor(req.response_loss_mask, dtype=torch.int, device=tgt_device))
             messages.append({"messages": req.messages})
             reward_scores.append(req.reward_scores)
+            to_log_stats.append(req.to_log_stats)
 
         prompt_ids = pad_sequence(
             prompt_ids,
@@ -1026,6 +1041,7 @@ class SGLangRollout(BaseRollout):
             non_tensor_batch={
                 "messages": np.array(messages),
                 "reward_scores": np.array(reward_scores),
+                "to_log_stats": np.array(to_log_stats),
             },
         )
 
@@ -1066,10 +1082,12 @@ class SGLangRollout(BaseRollout):
                     response_position_ids=[],
                     response_loss_mask=[],
                     reward_scores={},
+                    to_log_stats={},
                     max_prompt_len=self.config.prompt_length,
                     max_response_len=self.config.response_length,
                     max_model_len=min(self.config.max_model_len, self.config.prompt_length + self.config.response_length),
                     use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
+                    force_thinking=self.config.multi_turn.force_thinking,
                     enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
                     tokenizer=self.tokenizer,
                 )
@@ -1108,10 +1126,12 @@ class SGLangRollout(BaseRollout):
             prompt_loss_mask=[0] * len(_input_ids),
             response_loss_mask=[],
             reward_scores={},
+            to_log_stats={},
             max_prompt_len=self.config.prompt_length,
             max_response_len=self.config.response_length,
             max_model_len=min(self.config.max_model_len, self.config.prompt_length + self.config.response_length),
             use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
+            force_thinking=self.config.multi_turn.force_thinking,
             enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
             tokenizer=self.tokenizer,
         )
