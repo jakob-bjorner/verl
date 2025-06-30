@@ -76,6 +76,38 @@ def _compute_response_info(batch: DataProto) -> Dict[str, Any]:
         response_length=response_length,
     )
 
+def compute_combo_lock_metrics(batch: DataProto, reward_tensor: torch.Tensor):
+    if "to_log_stats" in batch.non_tensor_batch:
+        to_log_stats: List[Dict[str, Any]] = batch.non_tensor_batch['to_log_stats']
+        tokens_per_assistant_message_flat = [l for to_log_stat in to_log_stats for l in to_log_stat["tokens_per_assistant_message"]]
+        mean = lambda l: (0 if len(l) == 0 else sum(l) / len(l))
+        average_tokens_per_assistant_message = mean(tokens_per_assistant_message_flat)
+        attempts = [to_log_stat['run_attempts'] for to_log_stat in to_log_stats]
+        successes = [to_log_stat['run_success'] for to_log_stat in to_log_stats]
+        completions = [to_log_stat['run_completion'] for to_log_stat in to_log_stats]
+        fraction_incomplete = 1 - mean(completions)
+        fraction_successful = mean(successes)
+        average_attempts = mean(attempts)
+        average_attempts_when_successful = mean(list(attempt for attempt, success in zip(attempts, successes) if success))
+        # I want to compute attempts, attempts when successful, fraction unsuccessful, fraction incomplete, (should log per run success, completion, and # attempts, and synthesize these numbers later.)
+        # tokens generated per assistant call. (should log just the number of tokens in the assistant messages.)
+        # {"tokens_per_assistant_message": tokens_per_assistant_message, 
+        # "run_success": all_rewards['interaction_reward'][0] > 0, 
+        # "run_attempts": self.interaction.get_attempts(_req.request_id), 
+        # "run_completion": run_completion}
+        # assume first that the type of to_log_stats is a 
+        sequence_score = reward_tensor.sum(-1)
+        return {
+                    "critic/tokens_per_assistant": average_tokens_per_assistant_message,
+                    "critic/fraction_incomplete": fraction_incomplete,
+                    "critic/fraction_successful": fraction_successful,
+                    "critic/average_attempts": average_attempts,
+                    "critic/average_attempts_when_successful": average_attempts_when_successful,
+                    "critic/score/mean": torch.mean(sequence_score).detach().item(),
+                }
+    else:
+        return {}
+
 
 def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str, Any]:
     """
@@ -125,27 +157,6 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         valid_values = torch.masked_select(values, response_mask)
         return_diff_var = torch.var(valid_returns - valid_values)
         return_var = torch.var(valid_returns)
-    # breakpoint()
-    # print(batch.non_tensor_batch['to_log_stats'])
-    if "to_log_stats" in batch.non_tensor_batch:
-        to_log_stats: List[Dict[str, Any]] = batch.non_tensor_batch['to_log_stats']
-        tokens_per_assistant_message_flat = [l for to_log_stat in to_log_stats for l in to_log_stat["tokens_per_assistant_message"]]
-        mean = lambda l: (0 if len(l) == 0 else sum(l) / len(l))
-        average_tokens_per_assistant_message = mean(tokens_per_assistant_message_flat)
-        attempts = [to_log_stat['run_attempts'] for to_log_stat in to_log_stats]
-        successes = [to_log_stat['run_success'] for to_log_stat in to_log_stats]
-        completions = [to_log_stat['run_completion'] for to_log_stat in to_log_stats]
-        fraction_incomplete = 1 - mean(completions)
-        fraction_successful = mean(successes)
-        average_attempts = mean(attempts)
-        average_attempts_when_successful = mean(list(attempt for attempt, success in zip(attempts, successes) if success))
-        # I want to compute attempts, attempts when successful, fraction unsuccessful, fraction incomplete, (should log per run success, completion, and # attempts, and synthesize these numbers later.)
-        # tokens generated per assistant call. (should log just the number of tokens in the assistant messages.)
-        # {"tokens_per_assistant_message": tokens_per_assistant_message, 
-        # "run_success": all_rewards['interaction_reward'][0] > 0, 
-        # "run_attempts": self.interaction.get_attempts(_req.request_id), 
-        # "run_completion": run_completion}
-        # assume first that the type of to_log_stats is a 
 
     metrics = {
         # score
@@ -164,19 +175,6 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         "critic/returns/mean": torch.mean(valid_returns).detach().item(),
         "critic/returns/max": torch.max(valid_returns).detach().item(),
         "critic/returns/min": torch.min(valid_returns).detach().item(),
-        **(
-            {
-                "critic/tokens_per_assistant": average_tokens_per_assistant_message,
-                "critic/fraction_incomplete": fraction_incomplete,
-                "critic/fraction_successful": fraction_successful,
-                "critic/average_attempts": average_attempts,
-                "critic/average_attempts_when_successful": average_attempts_when_successful,
-            }
-            if "to_log_stats" in batch.non_tensor_batch
-            else
-            {}
-        ),
-
         **(
             {
                 # values

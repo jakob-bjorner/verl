@@ -19,6 +19,14 @@ DEBUG=${DEBUG:-""}
 DSET=${DSET:-"interaction"}
 FORCE_THINKING=${FORCE_THINKING:-""}
 EPOCHS=${EPOCHS:-15}
+TP=${TP:-2}
+QWEN=${QWEN:-2.5}
+MAX_RESP=${MAX_RESP:-$((1024 * 4))}
+if [ $QWEN -eq 3 ]; then
+    MODEL_NAME=Qwen/Qwen${QWEN}-${B}B
+else
+    MODEL_NAME=Qwen/Qwen${QWEN}-${B}B-Instruct
+fi
 # DEBUG=miss GPUS=2 MICRO_BATCH_SIZE=4 CUDA_VISIBLE_DEVICES="2,3" B=3 MINI_BATCH_SIZE=512 N_ROLLOUT=8 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_think B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
@@ -26,6 +34,7 @@ EPOCHS=${EPOCHS:-15}
 # DEBUG=thought_force FORCE_THINKING="Let's think step by step" DSET=interaction B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=thought_force2 FORCE_THINKING="Let's think step by step before giving the query." DSET=interaction B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." DSET=interaction_simple_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q3_4b_belief_simple FORCE_THINKING="" DSET=interaction_simple_belief B=4 N_ROLLOUT=2 QWEN=3 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -33,11 +42,11 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.max_prompt_length=1024 \
-    data.max_response_length=$((1024 * 4)) \
+    data.max_response_length=$MAX_RESP \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-${B}B-Instruct \
+    actor_rollout_ref.model.path=$MODEL_NAME \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     +actor_rollout_ref.model.enable_activation_offloading=True \
@@ -52,7 +61,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=$OFFLOAD \
     +actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$TP \
     actor_rollout_ref.rollout.name=sglang \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.n=$N_ROLLOUT \
@@ -63,7 +72,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl-tests' \
-    trainer.experiment_name=qwen2.5-${B}b_function_rm-combolock-sgl-multi-w-$DSET-n$N_ROLLOUT-2-$DEBUG \
+    trainer.experiment_name=qwen${QWEN}-${B}b_function_rm-combolock-sgl-multi-w-$DSET-n$N_ROLLOUT-2-$DEBUG \
     trainer.n_gpus_per_node=$GPUS \
     trainer.nnodes=1 \
     trainer.log_val_generations=10 \
