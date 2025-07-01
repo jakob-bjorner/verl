@@ -862,8 +862,8 @@ class SGLangRollout(BaseRollout):
             all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
         # all rewards other than this don't matter anyway for combo lock environment, with GRPO especially. Outcome rewards are it.
         # this is very specific to combo lock with the defined rewards of anything above zero meaning that the correct thing was eventually guessed.
-        _req.to_log_stats = {"tokens_per_assistant_message": tokens_per_assistant_message, "run_success": all_rewards['interaction_reward'][0] > 0, "run_attempts": self.interaction.get_attempts(_req.request_id), "run_completion": run_completion}
-        
+        _req.to_log_stats = {"trajectory_efficiency_info": self.interaction.get_trajectory_info(_req.request_id), "tokens_per_assistant_message": tokens_per_assistant_message, "run_success": all_rewards['interaction_reward'][0] > 0, "run_attempts": self.interaction.get_attempts(_req.request_id), "run_completion": run_completion}
+
         _req.finalize(self.tokenizer, all_rewards, finish_reason_type)
 
         return _req

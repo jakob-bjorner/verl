@@ -95,6 +95,8 @@ class ComboLockInteraction(BaseInteraction):
         return done, str_response_in_tool_call, reward, {}
     def get_attempts(self, instance_id: str) -> int:
         return self._instance_dict[instance_id]['env'].current_attempt
+    def get_trajectory_info(self, instance_id: str) -> dict:
+        return self._instance_dict[instance_id]['env'].get_trajectory_info()
     async def calculate_score(self, instance_id: str, **kwargs) -> float:
         # this is used in  sglang_rollout.py, and we ignore the step level reward to account for early terminating sequences.
         return self._instance_dict[instance_id]['env'].get_trajectory_score() 

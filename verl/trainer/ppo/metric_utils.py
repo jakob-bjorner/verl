@@ -97,7 +97,10 @@ def compute_combo_lock_metrics(batch: DataProto, reward_tensor: torch.Tensor):
         # "run_completion": run_completion}
         # assume first that the type of to_log_stats is a 
         sequence_score = reward_tensor.sum(-1)
+
+        avg_repeated_on_success = mean(list(to_log_stat["trajectory_efficiency_info"]["repeated_guesses"] for to_log_stat in to_log_stats if to_log_stat['run_success']))
         return {
+                    "critic/avg_repeated_on_success": avg_repeated_on_success,
                     "critic/tokens_per_assistant": average_tokens_per_assistant_message,
                     "critic/fraction_incomplete": fraction_incomplete,
                     "critic/fraction_successful": fraction_successful,
