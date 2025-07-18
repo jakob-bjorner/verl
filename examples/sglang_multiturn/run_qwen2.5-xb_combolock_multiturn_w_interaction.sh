@@ -35,6 +35,8 @@ fi
 # DEBUG=thought_force2 FORCE_THINKING="Let's think step by step before giving the query." DSET=interaction B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." DSET=interaction_simple_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q3_4b_belief_simple FORCE_THINKING="" MAX_RESP=16384 TP=1 DSET=interaction_simple_belief B=4 N_ROLLOUT=2 MICRO_BATCH_SIZE=2 QWEN=3 EPOCHS=150 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_14b_belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." B=14 N_ROLLOUT=2 MICRO_BATCH_SIZE=4 TP=4 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=debuggy RAY_DEBUG=1 CUDA_VISIBLE_DEVICES="2,3" B=3 GPUS=2 MICRO_BATCH_SIZE=4 TRAIN_BATCH_SIZE=16 N_ROLLOUT=4 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
