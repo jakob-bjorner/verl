@@ -3,12 +3,15 @@
 conda create -n env-v3 python=3.10.18
 pip install --upgrade pip
 pip install -e ".[sglang]"
+pip install python-dotenv
+pip install -e ../ # this is to install the optimal-explorer-dev package (local)
 # have to do the following because we have old ubuntu 2020 massive L. https://github.com/Dao-AILab/flash-attention/issues/1708
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
 pip install flash-attn==2.7.4.post1 --no-build-isolation
 # for debugging ray with vscode ray debugger
 pip install debugpy
 ```
+You also need to do WandB login. Use command `wandb login` and paste your API key from https://wandb.ai/authorize.
 
 
 <div align="center">
