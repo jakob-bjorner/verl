@@ -940,12 +940,12 @@ class RewardModelWorker(MegatronWorker, DistProfilerExtension):
 
         use_shm = self.config.model.get("use_shm", False)
         sft_tokenizer_local_path = copy_to_local(self.config.model.input_tokenizer, use_shm=use_shm)
-        sft_tokenizer = hf_tokenizer(sft_tokenizer_local_path)
+        sft_tokenizer = hf_tokenizer(sft_tokenizer_local_path, self.config.rollout.is_instruct_model)
         rm_tokenizer_path = self.config.model.get("rm_tokenizer", None)
         rm_tokenizer = None
         if rm_tokenizer_path is not None:
             rm_tokenizer_local_path = copy_to_local(rm_tokenizer_path, use_shm=use_shm)
-            rm_tokenizer = hf_tokenizer(rm_tokenizer_local_path, trust_remote_code=self.config.model.get("trust_remote_code", False))
+            rm_tokenizer = hf_tokenizer(rm_tokenizer_local_path, self.config.rollout.is_instruct_model, trust_remote_code=self.config.model.get("trust_remote_code", False))
 
         self.param_dtype = torch.bfloat16
         self.dtype = PrecisionType.to_dtype(self.param_dtype)

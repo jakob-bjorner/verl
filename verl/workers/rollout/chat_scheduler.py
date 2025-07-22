@@ -53,7 +53,7 @@ class CompletionCallback(ABC):
         print(f"Initialized tools: {self.tools}", flush=True)
 
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
-        self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
+        self.tokenizer = hf_tokenizer(local_path, config.actor_rollout_ref.rollout.is_instruct_model, trust_remote_code=True)
 
     @property
     def tool_schemas(self):

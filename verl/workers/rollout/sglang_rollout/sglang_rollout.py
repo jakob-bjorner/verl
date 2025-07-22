@@ -240,6 +240,7 @@ class SGLangRollout(BaseRollout):
                 process groups.
         """
         super().__init__()
+
         self.config = config
         self._device_mesh_cpu = device_mesh
         os.environ.setdefault("SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK", "true")
@@ -389,6 +390,9 @@ class SGLangRollout(BaseRollout):
         for k in self.config.keys():
             if hasattr(SamplingParams(), str(k)):
                 kwargs[k] = self.config.get(k)
+        # Jakob special sampling param codes for ease
+        if not self.config.get("is_instruct_model", True):
+            kwargs["stop"] = ["user:"]
         self.sampling_params = kwargs
 
     def _initialize_tools(self, config, tokenizer):

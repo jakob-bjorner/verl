@@ -10,6 +10,9 @@ data:
   # Tokenizer class or path. If null, it will be inferred from the model.
   tokenizer: null
 
+  #jakob chat template
+  chat_template: null
+
   # Whether to use shared memory for data loading.
   use_shm: False
 
@@ -383,6 +386,8 @@ actor_rollout_ref:
 
     # sync: LLM, async: AsyncLLM
     mode: sync
+
+    is_instruct_model: True
 
     # Sampling temperature for rollout.
     temperature: 1.0

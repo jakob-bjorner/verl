@@ -1,0 +1,13 @@
+{%- if messages[0]['role'] == 'system' %}
+    {{- 'system prompt:\n\n' + messages[0]['content'] + '\n\n' }}
+{%- else %}
+    {{- 'system prompt:\n\nYou are a helpful assistant.\n\n' }}
+{%- endif %}
+{%- for message in messages %}
+    {%- if (not (message.role == "system" and loop.first)) %}
+        {{- message.role + ':\n\n' + message.content + '\n\n' }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- 'assistant:' }}
+{%- endif %}

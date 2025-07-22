@@ -22,11 +22,21 @@ EPOCHS=${EPOCHS:-15}
 TP=${TP:-2}
 QWEN=${QWEN:-2.5}
 MAX_RESP=${MAX_RESP:-$((1024 * 4))}
+INSTRUCT=${INSTRUCT:-True}
 if [ $QWEN -eq 3 ]; then
-    MODEL_NAME=Qwen/Qwen${QWEN}-${B}B
+    if [ $INSTRUCT == True ]; then
+        MODEL_NAME=Qwen/Qwen${QWEN}-${B}B
+    else
+        MODEL_NAME=Qwen/Qwen${QWEN}-${B}B-Base
+    fi
 else
-    MODEL_NAME=Qwen/Qwen${QWEN}-${B}B-Instruct
+    if [ $INSTRUCT == True ]; then
+        MODEL_NAME=Qwen/Qwen${QWEN}-${B}B-Instruct
+    else
+        MODEL_NAME=Qwen/Qwen${QWEN}-${B}B
+    fi
 fi
+
 # DEBUG=miss GPUS=2 MICRO_BATCH_SIZE=4 CUDA_VISIBLE_DEVICES="2,3" B=3 MINI_BATCH_SIZE=512 N_ROLLOUT=8 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_think B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
@@ -36,7 +46,7 @@ fi
 # DEBUG=belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." DSET=interaction_simple_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q3_4b_belief_simple FORCE_THINKING="" MAX_RESP=16384 TP=1 DSET=interaction_simple_belief B=4 N_ROLLOUT=2 MICRO_BATCH_SIZE=2 QWEN=3 EPOCHS=150 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q2_5_14b_belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." B=14 N_ROLLOUT=2 MICRO_BATCH_SIZE=4 TP=4 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=debuggy RAY_DEBUG=1 CUDA_VISIBLE_DEVICES="2,3" B=3 GPUS=2 MICRO_BATCH_SIZE=4 TRAIN_BATCH_SIZE=16 N_ROLLOUT=4 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=debuggy INSTRUCT=False RAY_DEBUG=1 CUDA_VISIBLE_DEVICES="3,5" B=3 GPUS=2 MICRO_BATCH_SIZE=4 TRAIN_BATCH_SIZE=16 N_ROLLOUT=4 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -68,6 +78,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.n=$N_ROLLOUT \
     "actor_rollout_ref.rollout.multi_turn.force_thinking='$FORCE_THINKING'" \
+    actor_rollout_ref.rollout.is_instruct_model=$INSTRUCT \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.ref.fsdp_config.param_offload=$OFFLOAD \
     algorithm.use_kl_in_reward=False \
