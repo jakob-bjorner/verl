@@ -392,7 +392,7 @@ class SGLangRollout(BaseRollout):
                 kwargs[k] = self.config.get(k)
         # Jakob special sampling param codes for ease
         if not self.config.get("is_instruct_model", True):
-            kwargs["stop"] = ["</answer>"]
+            kwargs["stop"] = ["\n\n"] # "</answer>" looks potentially unnecessary?
         self.sampling_params = kwargs
 
     def _initialize_tools(self, config, tokenizer):
