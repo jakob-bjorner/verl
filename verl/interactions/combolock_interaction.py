@@ -64,7 +64,7 @@ class ComboLockInteraction(BaseInteraction):
             content_summary = content if len(content) < 20 else f"...{content[-20:]}"
             return False, f"Could not parse valid guess from content: '{content_summary}'. Please ensure the guess is contained in the final characters of your response, and using only use the characters from the vocab in your guess characters. Do not repeat characters in your guess.", 0.0, {}
         obs, reward, done, info = mdp.step(guess)
-        str_response_in_tool_call = "Feedback:"
+        str_response_in_tool_call = ""
         for i, (g, f) in enumerate(zip(guess, info['feedback'])):
             position = i + 1
             if f == 0: 
@@ -73,6 +73,7 @@ class ComboLockInteraction(BaseInteraction):
                 str_response_in_tool_call += f"\n{g} is not in Position {position}, but is in the lock"
             else: # f == 2
                 str_response_in_tool_call += f"\n{g} is in Position {position}!"
+        str_response_in_tool_call = str_response_in_tool_call.strip()
         if self._instance_dict[instance_id]['format'] == "interaction_belief":
             str_response_in_tool_call += ""
             # str_response_in_tool_call += ("\nNow update your beliefs and make your next query to the lock."

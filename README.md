@@ -1,6 +1,7 @@
 ## getting started (Jakob)
-```bash
-conda create -n env-v3 python=3.10.18
+```bash (from inside verl_submodule)
+conda create -n verl python=3.10.18
+conda activate verl
 pip install --upgrade pip
 pip install -e ".[sglang]"
 pip install python-dotenv

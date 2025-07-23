@@ -46,7 +46,8 @@ fi
 # DEBUG=belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." DSET=interaction_simple_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q3_4b_belief_simple FORCE_THINKING="" MAX_RESP=16384 TP=1 DSET=interaction_simple_belief B=4 N_ROLLOUT=2 MICRO_BATCH_SIZE=2 QWEN=3 EPOCHS=150 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q2_5_14b_belief_simple FORCE_THINKING="Let\'s update the belief state first, and then use that belief to determine the best query." B=14 N_ROLLOUT=2 MICRO_BATCH_SIZE=4 TP=4 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=debuggy INSTRUCT=False RAY_DEBUG=1 CUDA_VISIBLE_DEVICES="3,5" B=3 GPUS=2 MICRO_BATCH_SIZE=4 TRAIN_BATCH_SIZE=16 N_ROLLOUT=4 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=debuggy INSTRUCT=False RAY_DEBUG=1 CUDA_VISIBLE_DEVICES="2" B=3 GPUS=1 MICRO_BATCH_SIZE=4 TRAIN_BATCH_SIZE=16 N_ROLLOUT=4 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=test_base DSET=interaction_base_base INSTRUCT=False B=7 GPUS=4 MICRO_BATCH_SIZE=4 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -88,12 +89,12 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name=qwen${QWEN}-${B}b_function_rm-combolock-sgl-multi-w-$DSET-n$N_ROLLOUT-2-$DEBUG \
     trainer.n_gpus_per_node=$GPUS \
     trainer.nnodes=1 \
-    trainer.log_val_generations=10 \
     trainer.save_freq=20 \
-    trainer.test_freq=5 \
-    data.train_files=/nas/ucb/jbjorner3/data/multi_turn_combo_lock_$DSET/train.parquet \
-    data.val_files=/nas/ucb/jbjorner3/data/multi_turn_combo_lock_$DSET/test.parquet \
+    data.train_files=$PROJECT_DIR/../data/multi_turn_combo_lock_$DSET/train.parquet \
+    data.val_files=$PROJECT_DIR/../data/multi_turn_combo_lock_$DSET/test.parquet \
     actor_rollout_ref.rollout.multi_turn.interaction_config_path="$PROJECT_DIR/examples/sglang_multiturn/config/interaction_config/combolock_interaction_config.yaml" \
     reward_model.reward_manager=multiturn \
+    trainer.log_val_generations=10 \
     +custom_reward_function.path=$PROJECT_DIR/verl/utils/reward_score/multiturn.py \
     trainer.total_epochs=$EPOCHS $@
+    # trainer.test_freq=5 \
