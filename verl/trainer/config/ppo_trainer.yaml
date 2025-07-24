@@ -510,6 +510,9 @@ actor_rollout_ref:
       # set to True for multi-turn tool interaction tasks; should set rollout.name to sglang as well
       enable: False
 
+      # flag for enabling belief state generation.
+      multi_context: False 
+
       # null for no limit (default max_length // 3)
       max_assistant_turns: null
 
