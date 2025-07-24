@@ -63,7 +63,7 @@ from verl.utils.debug import GPUMemoryLogger
 from verl.utils.net_utils import is_ipv6
 from verl.utils.torch_functional import get_response_mask, pad_sequence_to_length
 from verl.workers.rollout.base import BaseRollout
-from verl.workers.rollout.schemas import AsyncRolloutRequest, AsyncRolloutRequestStateEnum, FinishReasonTypeEnum, Message
+from verl.workers.rollout.schemas import AsyncRolloutRequest, AsyncRolloutRequestStateEnum, FinishReasonTypeEnum, Message, AsyncRolloutRequestMultiContext, AsyncRolloutRequestMultiContextStateEnum
 from verl.workers.rollout.sglang_rollout.utils import broadcast_pyobj
 
 try:
@@ -204,6 +204,47 @@ def get_tool_call_parser_type(tokenizer: PreTrainedTokenizer) -> str:
     else:
         raise ValueError(f"No tool call parser found for tokenizer {tokenizer}")
 
+# def belief_update_conv(belief_state, agent_action, env_response):
+#                     belief_conv = get_conversation_template("gpt-4")
+
+#                     belief_conv.append_message(role="user", message=f'''Update the belief state based on the agent's action and environment response. Compress the context for an agent taking an action. Remove redundant information and maintain important information about the game state needed to take optimal future actions.
+# Global Instruction: {agent_first_message}
+# Current belief state: {belief_state}
+# Agent's action: {agent_action}
+# Environment's response: {env_response}
+# Output the updated belief state inside <BELIEF> and </BELIEF> tags.''')
+#                     return belief_conv
+#                 def prompt_action_with_belief(belief_state):
+#                     agent_conv = get_conversation_template("gpt-4")
+#                     agent_conv.append_message(role="user", message=f'Global Instruction: {agent_first_message}\nCurrent belief state: {belief_state}\nNow make your next action based on the global instruction and current belief.')
+#                     return agent_conv
+                
+#                 if turn == 1:
+#                     belief_state: str = "<BELIEF>\nNo belief to start.\n</BELIEF>"
+#                 if turn > 0:
+#                     curr_messages = agent_conv.to_openai_api_messages()
+#                     belief_state_response = {"response": ""}
+#                     tries = 0
+#                     valid_res = lambda res: bool("<BELIEF>" in res and "</BELIEF>" in res)
+#                     while not valid_res(belief_state_response['response']) and tries < 3:
+#                         belief_state_response = await self.generate_response_from_llm_helper( # belief generated before this.
+#                             llm_inference_engine=self.agent,
+#                             conv=belief_update_conv(
+#                                 belief_state,
+#                                 curr_messages[-2]['content'],
+#                                 curr_messages[-1]['content'],
+#                                 ).to_openai_api_messages(),
+#                             generation_config=agent_generation_config,
+#                             max_attempts=num_max_agent_response_generations,
+#                             response_extractor=None,
+#                         )
+#                         tries+=1
+#                     if not valid_res(belief_state_response['response']):
+#                         import ipdb
+#                         ipdb.set_trace()
+#                     belief_state = belief_state_response['response'].split("<BELIEF>")[1].split("</BELIEF>")[0] # tries to spit out ctions this isnt 
+#                     belief_state_response_llm_resp = belief_state_response["llm_resp"].dict()
+#                     agent_conv = prompt_action_with_belief(belief_state)
 
 class SGLangRollout(BaseRollout):
     def __init__(
@@ -689,6 +730,15 @@ class SGLangRollout(BaseRollout):
 
         return DataProto(batch=batch, non_tensor_batch=_non_tensor_batch)
 
+    async def _async_rollout_a_request_multi_context(
+        self,
+        req: AsyncRolloutRequestMultiContext,
+        do_sample: bool = True,
+        is_validate: bool = False,
+        **kwargs,
+    ) -> AsyncRolloutRequestMultiContext:
+        pass
+
     async def _async_rollout_a_request(
         self,
         req: AsyncRolloutRequest,
@@ -698,6 +748,7 @@ class SGLangRollout(BaseRollout):
     ) -> AsyncRolloutRequest:
         assert self._tp_rank == 0, "only the master process can call this function"
         _req = deepcopy(req)
+        breakpoint()
         finish_reason_type = None
         output = None
 
@@ -740,7 +791,7 @@ class SGLangRollout(BaseRollout):
         # number of tokens in the assistant messages
         tokens_per_assistant_message = []
         run_completion = False
-
+        
         while current_turns < self.config.multi_turn.max_assistant_turns:
             if _req.state == AsyncRolloutRequestStateEnum.PENDING:
                 await self._handle_pending_state(_req)
@@ -1047,6 +1098,7 @@ class SGLangRollout(BaseRollout):
                 "reward_scores": np.array(reward_scores),
                 "to_log_stats": np.array(to_log_stats),
             },
+            # add item here for trajectory index?
         )
 
     def _preprocess_prompt_to_async_rollout_requests(self, prompts: DataProto, n: int) -> list[AsyncRolloutRequest]:

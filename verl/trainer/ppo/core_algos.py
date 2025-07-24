@@ -104,6 +104,7 @@ class AdvantageEstimator(str, Enum):
 
     GAE = "gae"
     GRPO = "grpo"
+    GRPO_MT = "grpo_mt" # Multi-turn GRPO Advantage Estimator
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"
     REMAX = "remax"
@@ -203,56 +204,86 @@ def compute_grpo_outcome_advantage(
     response_mask: torch.Tensor,
     index: np.ndarray,
     epsilon: float = 1e-6,
-    norm_adv_by_std_in_grpo: str = True,
+    norm_adv_by_std_in_grpo: bool = True,
+    multi_turn_tensors: bool = False, # to support multi-turn advantage
+    rollout_ids: np.ndarray = None,
 ):
     """
     Compute advantage for GRPO, operating only on Outcome reward
     (with only one scalar reward for each response).
 
     Args:
-        token_level_rewards: `(torch.Tensor)`
-            shape is (bs, response_length)
-        response_mask: `(torch.Tensor)`
-            shape is (bs, response_length)
+        token_level_rewards: `(torch.Tensor)` or `List[torch.Tensor]`
+            shape is (bs, response_length) or list of such tensors for multi-turn
+        response_mask: `(torch.Tensor)` or `List[torch.Tensor]`
+            shape is (bs, response_length) or list of such tensors for multi-turn
+        index: (np.ndarray)
+            shape is (bs,) or (n_rollouts,) for multi-turn
         norm_adv_by_std_in_grpo: (bool)
             whether to scale the GRPO advantage.
             If True, the advantage is scaled by the std, as in the original GRPO.
             If False, the advantage is not scaled, as in Dr.GRPO (https://arxiv.org/abs/2503.20783).
+        multi_turn_tensors: (bool, optional)
+            If True, expects token_level_rewards and response_mask as lists of tensors (one per turn/rollout).
+            If False (default), expects single tensors as before.
+        rollout_ids: (np.ndarray, optional)
+            If provided, maps each sample to a rollout id (for multi-turn).
 
     Returns:
-        advantages: `(torch.Tensor)`
-            shape is (bs, response_length)
-        Returns: `(torch.Tensor)`
-            shape is (bs, response_length)
+        advantages: `(torch.Tensor)` or `List[torch.Tensor]`
+            shape is (bs, response_length) or list of such tensors for multi-turn
+        returns: `(torch.Tensor)` or `List[torch.Tensor]`
+            shape is (bs, response_length) or list of such tensors for multi-turn
     """
-    scores = token_level_rewards.sum(dim=-1)
+    from collections import defaultdict
 
-    id2score = defaultdict(list)
-    id2mean = {}
-    id2std = {}
+    def _compute_single(scores, response_mask, index, norm_adv_by_std_in_grpo, epsilon):
+        id2score = defaultdict(list)
+        id2mean = {}
+        id2std = {}
 
-    with torch.no_grad():
-        bsz = scores.shape[0]
-        for i in range(bsz):
-            id2score[index[i]].append(scores[i])
-        for idx in id2score:
-            if len(id2score[idx]) == 1:
-                id2mean[idx] = torch.tensor(0.0)
-                id2std[idx] = torch.tensor(1.0)
-            elif len(id2score[idx]) > 1:
-                id2mean[idx] = torch.mean(torch.tensor(id2score[idx]))
-                id2std[idx] = torch.std(torch.tensor([id2score[idx]]))
+        with torch.no_grad():
+            bsz = scores.shape[0]
+            for i in range(bsz):
+                id2score[index[i]].append(scores[i])
+            for idx in id2score:
+                if len(id2score[idx]) == 1:
+                    id2mean[idx] = torch.tensor(0.0, device=scores.device, dtype=scores.dtype)
+                    id2std[idx] = torch.tensor(1.0, device=scores.device, dtype=scores.dtype)
+                elif len(id2score[idx]) > 1:
+                    stacked = torch.stack(id2score[idx])
+                    id2mean[idx] = torch.mean(stacked)
+                    id2std[idx] = torch.std(stacked)
+                else:
+                    raise ValueError(f"no score in prompt index: {idx}")
+            for i in range(bsz):
+                if norm_adv_by_std_in_grpo:
+                    scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
+                else:
+                    scores[i] = scores[i] - id2mean[index[i]]
+            scores = scores.unsqueeze(-1) * response_mask
+        return scores, scores
+
+    # Support both single tensor and list of tensors for multi-turn
+    if not multi_turn_tensors:
+        # Original single-tensor behavior
+        scores = token_level_rewards.sum(dim=-1)
+        return _compute_single(scores, response_mask, index, norm_adv_by_std_in_grpo, epsilon)
+    else:
+        advantages_list = []
+        returns_list = []
+        for turn_idx, (rewards, mask) in enumerate(zip(token_level_rewards, response_mask)):
+            # For each turn, index should map to rollout/sample
+            # If rollout_ids is provided, use it; else, use index as is
+            if rollout_ids is not None:
+                idx = rollout_ids
             else:
-                raise ValueError(f"no score in prompt index: {idx}")
-        for i in range(bsz):
-            if norm_adv_by_std_in_grpo:
-                scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
-            else:
-                scores[i] = scores[i] - id2mean[index[i]]
-        scores = scores.unsqueeze(-1) * response_mask
-
-    return scores, scores
-
+                idx = index
+            scores = rewards.sum(dim=-1)
+            adv, ret = _compute_single(scores, mask, idx, norm_adv_by_std_in_grpo, epsilon)
+            advantages_list.append(adv)
+            returns_list.append(ret)
+        return advantages_list, returns_list
 
 @register_adv_est(AdvantageEstimator.GRPO_PASSK)  # or simply: @register_adv_est("grpo_passk")
 def compute_grpo_passk_outcome_advantage(

@@ -65,6 +65,16 @@ class AsyncRolloutRequestStateEnum(str, Enum):
     TOOL_CALLING = "tool_calling"
     INTERACTING = "interacting"
 
+class AsyncRolloutRequestMultiContextStateEnum(str, Enum):
+    """The enum for async rollout request state."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TOOL_CALLING = "tool_calling"
+    INTERACTING = "interacting"
+    BELIEF_UPDATE = "belief_update" # added to support belief state updates in multi-context runs
 
 class AsyncRolloutRequest(BaseModel):
     """The data model for async rollout."""
@@ -265,3 +275,194 @@ class AsyncRolloutRequest(BaseModel):
         self.response_attention_mask = self.attention_mask[len(self.prompt_attention_mask) :][: self.max_response_len]
         self.response_position_ids = self.position_ids[len(self.prompt_position_ids) :][: self.max_response_len]
         self.response_loss_mask = self.loss_mask[len(self.prompt_loss_mask) :][: self.max_response_len]
+
+class AsyncRolloutRequestMultiContext(BaseModel):
+    """The data model for async rollout for multi-context training runs."""
+
+    batch_data_id: int = 0
+    rollout_offset: int = 0
+    request_id: str
+    state: AsyncRolloutRequestStateEnum
+    messages: List[List[Message]]
+    tool_schemas: Optional[List[OpenAIFunctionToolSchema]] = None
+    tools_kwargs: Dict[str, Any] = {}
+    interaction_kwargs: Dict[str, Any] = {}
+    input_ids: List[List[int]]
+    prompt_ids: List[List[int]]
+    response_ids: List[List[int]]
+    attention_mask: List[List[int]]
+    prompt_attention_mask: List[List[int]]
+    response_attention_mask: List[List[int]]
+    position_ids: List[List[int]]
+    prompt_position_ids: List[List[int]]
+    response_position_ids: List[List[int]]
+    loss_mask: List[List[int]]
+    prompt_loss_mask: List[List[int]]
+    response_loss_mask: List[List[int]]
+    reward_scores: Dict[str, float]
+    to_log_stats: Dict[str, Any]
+    max_prompt_len: int
+    max_response_len: int = 8192
+    max_model_len: int = 32768
+    metrics: Dict[str, List[Any]] = {}
+
+    use_inference_chat_template: bool
+    force_thinking: str
+    enable_tokenization_sanity_check: bool
+    generation_prompt_ids: List[List[int]]
+    base_conv_wo_gen_prompt_end_pos: List[int]
+    base_conv_with_gen_prompt_end_pos: List[int]
+
+    @model_validator(mode="before")
+    @classmethod
+    def initialize_request(cls, values):
+        if not (messages := values.get("messages")):
+            raise ValueError("messages is required for AsyncRolloutRequestMultiContext initialization")
+        if not (max_prompt_len := values.get("max_prompt_len")):
+            raise ValueError("max_prompt_len is required for AsyncRolloutRequestMultiContext initialization")
+        if not (tokenizer := values.pop("tokenizer", None)):
+            raise ValueError("tokenizer is required for AsyncRolloutRequestMultiContext initialization")
+
+        # Infer number of contexts
+        num_contexts = len(messages)
+        values["messages"] = [[Message.model_validate(msg) for msg in context_msgs] for context_msgs in messages]
+
+        tool_schemas = values.get("tool_schemas", [])
+        tools = [tool.model_dump() for tool in tool_schemas] if tool_schemas else None
+
+        # Initialize all context-specific fields as lists of lists
+        def get_empty_list():
+            return [[] for _ in range(num_contexts)]
+        def get_empty_int_list():
+            return [0 for _ in range(num_contexts)]
+
+        values["input_ids"] = values.get("input_ids") or get_empty_list()
+        values["attention_mask"] = values.get("attention_mask") or get_empty_list()
+        values["prompt_ids"] = get_empty_list()
+        values["prompt_attention_mask"] = get_empty_list()
+        values["position_ids"] = get_empty_list()
+        values["prompt_position_ids"] = get_empty_list()
+        values["loss_mask"] = get_empty_list()
+        values["prompt_loss_mask"] = get_empty_list()
+        values["generation_prompt_ids"] = get_empty_list()
+        values["base_conv_wo_gen_prompt_end_pos"] = get_empty_int_list()
+        values["base_conv_with_gen_prompt_end_pos"] = get_empty_int_list()
+
+        for i in range(num_contexts):
+            context_messages = values["messages"][i]
+            context_tool_schemas = tool_schemas  # If tool_schemas are per-context, update this line
+            context_tools = [tool.model_dump() for tool in context_tool_schemas] if context_tool_schemas else None
+            tokens_without_prompt = tokenizer.apply_chat_template(context_messages, tools=context_tools, add_generation_prompt=False, tokenize=True)
+            if not values["input_ids"][i] or not values["attention_mask"][i]:
+                tokenization_dict_with_prompt = tokenizer.apply_chat_template(context_messages, tools=context_tools, add_generation_prompt=True, tokenize=True, return_dict=True)
+                values["input_ids"][i], values["attention_mask"][i] = tokenization_dict_with_prompt["input_ids"], tokenization_dict_with_prompt["attention_mask"]
+                if len(values["input_ids"][i]) > max_prompt_len:
+                    logger.warning(f"Prompt {values['batch_data_id']} context {i} length {len(values['input_ids'][i])} greater than max_prompt_len {max_prompt_len} after applied chat template with tools.")
+            values["prompt_ids"][i], values["prompt_attention_mask"][i] = values["input_ids"][i], values["attention_mask"][i]
+            values["position_ids"][i] = values["prompt_position_ids"][i] = compute_position_id_with_mask(torch.tensor(values["attention_mask"][i])).tolist()
+            values["loss_mask"][i] = values["prompt_loss_mask"][i] = [0] * len(values["input_ids"][i])
+            values["generation_prompt_ids"][i] = values["input_ids"][i][len(tokens_without_prompt):]
+            values["base_conv_wo_gen_prompt_end_pos"][i] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=context_tools, add_generation_prompt=False, tokenize=False))
+            values["base_conv_with_gen_prompt_end_pos"][i] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=context_tools, add_generation_prompt=True, tokenize=False))
+        return values
+
+    def _update_input_ids(self, new_input_ids: List[int], attention_mask: bool, loss_mask: bool, index: int) -> None:
+        self.input_ids[index] += new_input_ids
+        attn_mask = [int(attention_mask)] * len(new_input_ids)
+        self.attention_mask[index] += attn_mask
+        self.loss_mask[index] += [int(loss_mask)] * len(new_input_ids)
+        self.position_ids[index] += (compute_position_id_with_mask(torch.tensor(attn_mask)) + (self.position_ids[index][-1] + 1)).tolist()
+        assert len(self.input_ids[index]) == len(self.attention_mask[index]) == len(self.position_ids[index]) == len(self.loss_mask[index]), f"""Request {self.request_id} context {index} has different length of {len(self.input_ids[index])=}, {len(self.attention_mask[index])=}, {len(self.position_ids[index])=}, {len(self.loss_mask[index])=}"""
+
+    def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer, index: int) -> list[int]:
+        if self.force_thinking:
+            thought_prompt_ids = tokenizer.encode(self.force_thinking)
+            combined_generation_prompt_ids = self.generation_prompt_ids[index] + thought_prompt_ids
+            temp_generation_prompt_ids = []
+            if self.input_ids[index][-len(self.generation_prompt_ids[index]):] == self.generation_prompt_ids[index]:
+                temp_generation_prompt_ids = thought_prompt_ids
+            elif self.input_ids[index][-len(combined_generation_prompt_ids):] == combined_generation_prompt_ids:
+                temp_generation_prompt_ids = []
+            else:
+                temp_generation_prompt_ids = combined_generation_prompt_ids
+            self._update_input_ids(temp_generation_prompt_ids, attention_mask=True, loss_mask=False, index=index)
+        else:
+            temp_generation_prompt_ids = self.generation_prompt_ids[index]
+            generation_prompt_ids = [] if self.input_ids[index][-len(temp_generation_prompt_ids):] == temp_generation_prompt_ids else temp_generation_prompt_ids
+            if generation_prompt_ids:
+                self._update_input_ids(generation_prompt_ids, attention_mask=True, loss_mask=False, index=index)
+        if self.force_thinking:
+            temp_thinking_ids = tokenizer.encode(self.force_thinking)
+            temp_thinking_ids = [] if self.input_ids[index][-len(temp_thinking_ids):] == temp_thinking_ids else temp_thinking_ids
+            self._update_input_ids(temp_thinking_ids, attention_mask=True, loss_mask=False, index=index)
+        if self.use_inference_chat_template:
+            return tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages[index]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=True, tokenize=True)
+        else:
+            return self.input_ids[index]
+
+    def add_user_message(self, tokenizer: PreTrainedTokenizer, content: str, index: int) -> None:
+        self.messages[index].append(Message(role="user", content=content))
+        content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[index][-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
+        content_ids = tokenizer.encode(content_str[self.base_conv_wo_gen_prompt_end_pos[index]:], add_special_tokens=False)
+        self._update_input_ids(content_ids, attention_mask=True, loss_mask=False, index=index)
+
+    def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content: str, index: int, tool_calls: Optional[List[OpenAIFunctionToolCall]] = None) -> None:
+        self.messages[index].append(Message(role="assistant", content=content, tool_calls=tool_calls))
+        content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[index][-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
+        content_ids = tokenizer.encode(content_str[self.base_conv_with_gen_prompt_end_pos[index]:], add_special_tokens=False)
+        self._update_input_ids(content_ids, attention_mask=True, loss_mask=True, index=index)
+
+    def add_tool_response_messages(self, tokenizer: PreTrainedTokenizer, contents: list[str], index: int) -> None:
+        if not contents:
+            return
+        self.messages[index].extend([Message(role="tool", content=content) for content in contents])
+        content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, *self.messages[index][-len(contents):]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
+        content_ids = tokenizer.encode(content_str[self.base_conv_wo_gen_prompt_end_pos[index]:], add_special_tokens=False)
+        self._update_input_ids(content_ids, attention_mask=True, loss_mask=False, index=index)
+
+    def update_metrics(self, metrics: Any, tool_id: str, index: int) -> None:
+        if self.metrics.get(tool_id) is None:
+            self.metrics[tool_id] = [[] for _ in range(len(self.messages))]
+        self.metrics[tool_id][index].append(metrics)
+
+    def finalize(self, tokenizer: PreTrainedTokenizer, reward_scores: Dict[str, List[float]], finish_reason_type: FinishReasonTypeEnum = FinishReasonTypeEnum.STOP, index: int = None) -> None:
+        # If index is None, finalize all contexts
+        if index is None:
+            for i in range(len(self.messages)):
+                self._finalize_context(tokenizer, reward_scores, finish_reason_type, i)
+        else:
+            self._finalize_context(tokenizer, reward_scores, finish_reason_type, index)
+
+    def _finalize_context(self, tokenizer: PreTrainedTokenizer, reward_scores: Dict[str, List[float]], finish_reason_type: FinishReasonTypeEnum, index: int) -> None:
+        self.state = AsyncRolloutRequestStateEnum.COMPLETED
+        self.reward_scores = reward_scores
+        if self.enable_tokenization_sanity_check:
+            full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages[index]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True)
+            if self.input_ids[index] != full_tokens:
+                logger.warning("Inconsistent training and inference tokenization detected. This may lead to unexpected behavior during training. Please review your chat template to determine if this is intentional. For more information, refer to the multiturn README.md.")
+                logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids[index], skip_special_tokens=False)}")
+        temp_generation_prompt_ids = self.generation_prompt_ids[index] + (tokenizer.encode(self.force_thinking) if self.force_thinking else [])
+        if self.input_ids[index][-len(temp_generation_prompt_ids):] == temp_generation_prompt_ids:
+            self.input_ids[index] = self.input_ids[index][:-len(temp_generation_prompt_ids)]
+            self.attention_mask[index] = self.attention_mask[index][:-len(temp_generation_prompt_ids)]
+            self.position_ids[index] = self.position_ids[index][:-len(temp_generation_prompt_ids)]
+            self.loss_mask[index] = self.loss_mask[index][:-len(temp_generation_prompt_ids)]
+        self.response_ids[index] = self.input_ids[index][len(self.prompt_ids[index]):]
+        if finish_reason_type == FinishReasonTypeEnum.STOP:
+            pass
+        elif finish_reason_type == FinishReasonTypeEnum.LENGTH:
+            pass
+        else:
+            raise ValueError(f"Unsupported finalize finish reason type: {finish_reason_type}")
+        self.truncate_output_ids(tokenizer, index)
+        assert len(self.input_ids[index]) == len(self.attention_mask[index]) == len(self.position_ids[index]) == len(self.loss_mask[index]), f"""Request {self.request_id} context {index} has different length of {len(self.input_ids[index])=}, {len(self.attention_mask[index])=}, {len(self.position_ids[index])=}, {len(self.loss_mask[index])=}"""
+
+    def truncate_output_ids(self, tokenizer: PreTrainedTokenizer, index: int) -> None:
+        self.input_ids[index] = self.input_ids[index][: self.max_model_len]
+        self.attention_mask[index] = self.attention_mask[index][: self.max_model_len]
+        self.position_ids[index] = self.position_ids[index][: self.max_model_len]
+        self.loss_mask[index] = self.loss_mask[index][: self.max_model_len]
+        self.response_ids[index] = self.input_ids[index][len(self.prompt_ids[index]):][: self.max_response_len]
+        self.response_attention_mask[index] = self.attention_mask[index][len(self.prompt_attention_mask[index]):][: self.max_response_len]
+        self.response_position_ids[index] = self.position_ids[index][len(self.prompt_position_ids[index]):][: self.max_response_len]
+        self.response_loss_mask[index] = self.loss_mask[index][len(self.prompt_loss_mask[index]):][: self.max_response_len]
