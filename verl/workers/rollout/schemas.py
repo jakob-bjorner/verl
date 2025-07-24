@@ -310,8 +310,8 @@ class AsyncRolloutRequestMultiContext(BaseModel):
     force_thinking: str
     enable_tokenization_sanity_check: bool
     generation_prompt_ids: List[List[int]]
-    base_conv_wo_gen_prompt_end_pos: List[int]
-    base_conv_with_gen_prompt_end_pos: List[int]
+    base_conv_wo_gen_prompt_end_pos: int
+    base_conv_with_gen_prompt_end_pos: int
 
     @model_validator(mode="before")
     @classmethod
@@ -329,6 +329,7 @@ class AsyncRolloutRequestMultiContext(BaseModel):
 
         tool_schemas = values.get("tool_schemas", [])
         tools = [tool.model_dump() for tool in tool_schemas] if tool_schemas else None
+        tokens_without_prompt = tokenizer.apply_chat_template(messages, tools=tools, add_generation_prompt=False, tokenize=True)
 
         # Initialize all context-specific fields as lists of lists
         def get_empty_list():
@@ -348,22 +349,19 @@ class AsyncRolloutRequestMultiContext(BaseModel):
         values["base_conv_wo_gen_prompt_end_pos"] = get_empty_int_list()
         values["base_conv_with_gen_prompt_end_pos"] = get_empty_int_list()
 
-        for i in range(num_contexts):
-            context_messages = values["messages"][i]
-            context_tool_schemas = tool_schemas  # If tool_schemas are per-context, update this line
-            context_tools = [tool.model_dump() for tool in context_tool_schemas] if context_tool_schemas else None
-            tokens_without_prompt = tokenizer.apply_chat_template(context_messages, tools=context_tools, add_generation_prompt=False, tokenize=True)
-            if not values["input_ids"][i] or not values["attention_mask"][i]:
-                tokenization_dict_with_prompt = tokenizer.apply_chat_template(context_messages, tools=context_tools, add_generation_prompt=True, tokenize=True, return_dict=True)
-                values["input_ids"][i], values["attention_mask"][i] = tokenization_dict_with_prompt["input_ids"], tokenization_dict_with_prompt["attention_mask"]
-                if len(values["input_ids"][i]) > max_prompt_len:
-                    logger.warning(f"Prompt {values['batch_data_id']} context {i} length {len(values['input_ids'][i])} greater than max_prompt_len {max_prompt_len} after applied chat template with tools.")
-            values["prompt_ids"][i], values["prompt_attention_mask"][i] = values["input_ids"][i], values["attention_mask"][i]
-            values["position_ids"][i] = values["prompt_position_ids"][i] = compute_position_id_with_mask(torch.tensor(values["attention_mask"][i])).tolist()
-            values["loss_mask"][i] = values["prompt_loss_mask"][i] = [0] * len(values["input_ids"][i])
-            values["generation_prompt_ids"][i] = values["input_ids"][i][len(tokens_without_prompt):]
-            values["base_conv_wo_gen_prompt_end_pos"][i] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=context_tools, add_generation_prompt=False, tokenize=False))
-            values["base_conv_with_gen_prompt_end_pos"][i] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=context_tools, add_generation_prompt=True, tokenize=False))
+        if not values.get("input_ids") or not values.get("attention_mask"):
+            tokenization_dict_with_prompt = tokenizer.apply_chat_template(messages, tools=[tool.model_dump() for tool in tool_schemas], add_generation_prompt=True, tokenize=True, return_dict=True)
+            values["input_ids"][0], values["attention_mask"][0] = tokenization_dict_with_prompt["input_ids"], tokenization_dict_with_prompt["attention_mask"]
+            if len(values["input_ids"]) > max_prompt_len:
+                # Only log the warning to avoid truncating in the middle of generation prompt. Consider raising an error for this case in the future.
+                logger.warning(f"Prompt {values['batch_data_id']} length {len(values['input_ids'])} greater than max_prompt_len {max_prompt_len} after applied chat template with tools.")
+
+        values["prompt_ids"][0], values["prompt_attention_mask"][0] = values["input_ids"][0], values["attention_mask"][0]
+        values["position_ids"][0] = values["prompt_position_ids"][0] = compute_position_id_with_mask(torch.tensor(values["attention_mask"][0])).tolist()
+        values["loss_mask"][0] = values["prompt_loss_mask"][0] = [0] * len(values["input_ids"][0])
+        values["generation_prompt_ids"][0] = values["input_ids"][0][len(tokens_without_prompt) :] 
+        values["base_conv_wo_gen_prompt_end_pos"] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=tools, add_generation_prompt=False, tokenize=False))
+        values["base_conv_with_gen_prompt_end_pos"] = len(tokenizer.apply_chat_template(BASE_CHAT_HISTORY, tools=tools, add_generation_prompt=True, tokenize=False))
         return values
 
     def _update_input_ids(self, new_input_ids: List[int], attention_mask: bool, loss_mask: bool, index: int) -> None:

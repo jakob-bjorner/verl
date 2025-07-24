@@ -748,7 +748,7 @@ class SGLangRollout(BaseRollout):
     ) -> AsyncRolloutRequest:
         assert self._tp_rank == 0, "only the master process can call this function"
         _req = deepcopy(req)
-        breakpoint()
+
         finish_reason_type = None
         output = None
 
@@ -1121,7 +1121,7 @@ class SGLangRollout(BaseRollout):
                     _interaction_kwargs = prompts.non_tensor_batch["interaction_kwargs"][data_idx]
                 else:
                     _interaction_kwargs = {}
-
+                breakpoint()
                 req = AsyncRolloutRequest(
                     batch_data_id=data_idx,
                     rollout_offset=rollout_offset,

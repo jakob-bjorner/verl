@@ -104,7 +104,7 @@ class AdvantageEstimator(str, Enum):
 
     GAE = "gae"
     GRPO = "grpo"
-    GRPO_MT = "grpo_mt" # Multi-turn GRPO Advantage Estimator
+    GRPO_MC = "grpo_mc" # Multi-context GRPO Advantage Estimator
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"
     REMAX = "remax"
@@ -205,7 +205,7 @@ def compute_grpo_outcome_advantage(
     index: np.ndarray,
     epsilon: float = 1e-6,
     norm_adv_by_std_in_grpo: bool = True,
-    multi_turn_tensors: bool = False, # to support multi-turn advantage
+    multi_context_tensors: bool = False, # to support multi-turn advantage
     rollout_ids: np.ndarray = None,
 ):
     """
@@ -223,7 +223,7 @@ def compute_grpo_outcome_advantage(
             whether to scale the GRPO advantage.
             If True, the advantage is scaled by the std, as in the original GRPO.
             If False, the advantage is not scaled, as in Dr.GRPO (https://arxiv.org/abs/2503.20783).
-        multi_turn_tensors: (bool, optional)
+        multi_context_tensors: (bool, optional)
             If True, expects token_level_rewards and response_mask as lists of tensors (one per turn/rollout).
             If False (default), expects single tensors as before.
         rollout_ids: (np.ndarray, optional)
@@ -265,7 +265,7 @@ def compute_grpo_outcome_advantage(
         return scores, scores
 
     # Support both single tensor and list of tensors for multi-turn
-    if not multi_turn_tensors:
+    if not multi_context_tensors:
         # Original single-tensor behavior
         scores = token_level_rewards.sum(dim=-1)
         return _compute_single(scores, response_mask, index, norm_adv_by_std_in_grpo, epsilon)
