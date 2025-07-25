@@ -63,7 +63,7 @@ from verl.utils.debug import GPUMemoryLogger
 from verl.utils.net_utils import is_ipv6
 from verl.utils.torch_functional import get_response_mask, pad_sequence_to_length
 from verl.workers.rollout.base import BaseRollout
-from verl.workers.rollout.schemas import AsyncRolloutRequest, AsyncRolloutRequestStateEnum, FinishReasonTypeEnum, Message, AsyncRolloutRequestMultiContext, AsyncRolloutRequestMultiContextStateEnum
+from verl.workers.rollout.schemas import AsyncRolloutRequest, AsyncRolloutRequestStateEnum, FinishReasonTypeEnum, Message, AsyncRolloutRequestMultiContext, AsyncRolloutRequestInterface
 from verl.workers.rollout.sglang_rollout.utils import broadcast_pyobj
 
 try:
@@ -204,47 +204,6 @@ def get_tool_call_parser_type(tokenizer: PreTrainedTokenizer) -> str:
     else:
         raise ValueError(f"No tool call parser found for tokenizer {tokenizer}")
 
-# def belief_update_conv(belief_state, agent_action, env_response):
-#                     belief_conv = get_conversation_template("gpt-4")
-
-#                     belief_conv.append_message(role="user", message=f'''Update the belief state based on the agent's action and environment response. Compress the context for an agent taking an action. Remove redundant information and maintain important information about the game state needed to take optimal future actions.
-# Global Instruction: {agent_first_message}
-# Current belief state: {belief_state}
-# Agent's action: {agent_action}
-# Environment's response: {env_response}
-# Output the updated belief state inside <BELIEF> and </BELIEF> tags.''')
-#                     return belief_conv
-#                 def prompt_action_with_belief(belief_state):
-#                     agent_conv = get_conversation_template("gpt-4")
-#                     agent_conv.append_message(role="user", message=f'Global Instruction: {agent_first_message}\nCurrent belief state: {belief_state}\nNow make your next action based on the global instruction and current belief.')
-#                     return agent_conv
-                
-#                 if turn == 1:
-#                     belief_state: str = "<BELIEF>\nNo belief to start.\n</BELIEF>"
-#                 if turn > 0:
-#                     curr_messages = agent_conv.to_openai_api_messages()
-#                     belief_state_response = {"response": ""}
-#                     tries = 0
-#                     valid_res = lambda res: bool("<BELIEF>" in res and "</BELIEF>" in res)
-#                     while not valid_res(belief_state_response['response']) and tries < 3:
-#                         belief_state_response = await self.generate_response_from_llm_helper( # belief generated before this.
-#                             llm_inference_engine=self.agent,
-#                             conv=belief_update_conv(
-#                                 belief_state,
-#                                 curr_messages[-2]['content'],
-#                                 curr_messages[-1]['content'],
-#                                 ).to_openai_api_messages(),
-#                             generation_config=agent_generation_config,
-#                             max_attempts=num_max_agent_response_generations,
-#                             response_extractor=None,
-#                         )
-#                         tries+=1
-#                     if not valid_res(belief_state_response['response']):
-#                         import ipdb
-#                         ipdb.set_trace()
-#                     belief_state = belief_state_response['response'].split("<BELIEF>")[1].split("</BELIEF>")[0] # tries to spit out ctions this isnt 
-#                     belief_state_response_llm_resp = belief_state_response["llm_resp"].dict()
-#                     agent_conv = prompt_action_with_belief(belief_state)
 
 class SGLangRollout(BaseRollout):
     def __init__(
@@ -730,22 +689,13 @@ class SGLangRollout(BaseRollout):
 
         return DataProto(batch=batch, non_tensor_batch=_non_tensor_batch)
 
-    async def _async_rollout_a_request_multi_context(
-        self,
-        req: AsyncRolloutRequestMultiContext,
-        do_sample: bool = True,
-        is_validate: bool = False,
-        **kwargs,
-    ) -> AsyncRolloutRequestMultiContext:
-        pass
-
     async def _async_rollout_a_request(
         self,
-        req: AsyncRolloutRequest,
+        req: AsyncRolloutRequestInterface,
         do_sample: bool = True,
         is_validate: bool = False,
         **kwargs,
-    ) -> AsyncRolloutRequest:
+    ) -> AsyncRolloutRequestInterface:
         assert self._tp_rank == 0, "only the master process can call this function"
         _req = deepcopy(req)
 
@@ -792,13 +742,14 @@ class SGLangRollout(BaseRollout):
         tokens_per_assistant_message = []
         run_completion = False
         
+        
         while current_turns < self.config.multi_turn.max_assistant_turns:
             if _req.state == AsyncRolloutRequestStateEnum.PENDING:
                 await self._handle_pending_state(_req)
                 _req.state = AsyncRolloutRequestStateEnum.RUNNING
             elif _req.state == AsyncRolloutRequestStateEnum.TOOL_CALLING:
-                if _req.messages[-1].tool_calls is not None:
-                    parsed_tool_calls = _req.messages[-1].tool_calls
+                if _req.get_last_msg().tool_calls is not None:
+                    parsed_tool_calls = _req.get_last_msg().tool_calls
                     tool_call_results = await asyncio.gather(
                         *[
                             self._tool_map[tool_call.function.name].execute(
@@ -812,19 +763,31 @@ class SGLangRollout(BaseRollout):
                     _req.add_tool_response_messages(self.tokenizer, [resp for resp, _, _ in tool_call_results])
                     for tool_call, (resp, reward, metrics) in zip(parsed_tool_calls, tool_call_results):
                         _req.update_metrics(metrics, tool_call.function.name)
-                    if len(_req.input_ids) >= self.config.max_model_len:
+                    if _req.get_next_input_ids_len() >= self.config.max_model_len:
                         finish_reason_type = FinishReasonTypeEnum.STOP
                         break
                     _req.state = AsyncRolloutRequestStateEnum.RUNNING
                 else:
-                    raise ValueError(f"Unexpected tool calling last message state: {_req.messages[-1]}")
+                    raise ValueError(f"Unexpected tool calling last message state: {_req.get_last_msg()}")
             elif _req.state == AsyncRolloutRequestStateEnum.RUNNING:
                 # Only continue the conversation if the prompt length is not greater than max_model_len - 1,
                 # since SGLang raises an error when max_new_tokens + 1 is greater to max_model_len (the extra token accounts for the EOS token).
                 if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
                     finish_reason_type = FinishReasonTypeEnum.LENGTH
                     break
-                output = await self._handle_engine_call(_req, request_sampling_params)
+                # every time before generating an action we check if belief state should be calculated.
+                # this will have to call handle engine call for belief generation,
+                if _req.should_generate_belief(): 
+                    _req.is_gen_belief = True
+                    output = await self._handle_engine_call(_req, request_sampling_params) # belief generation.
+                    content = output["text"]
+                    _req.add_assistant_message(self.tokenizer, content) 
+                    # it is possible to have a belief state call which requires tools, we will not support this for now. 
+                    _req.is_gen_belief = False
+                    # and store the belief in one context with gradient info, (belief generation context)
+                    # and then separately in another context without gradient info (action context)
+                output = await self._handle_engine_call(_req, request_sampling_params) # action
+                _req.increment_turn()
                 # print('output', output) # this for seeing if I can compute the number of generated tokens easily.
                 tokens_per_assistant_message.append(output['meta_info']['completion_tokens']) # this is characters right now, but want to make it tokens eventually.
                 content = output["text"]
@@ -880,7 +843,7 @@ class SGLangRollout(BaseRollout):
                             break
             elif _req.state == AsyncRolloutRequestStateEnum.INTERACTING:
                 user_turns += 1
-                messages = [{"role": x.role, "content": x.content} for x in _req.messages]
+                messages = [{"role": x.role, "content": x.content} for x in _req.get_last_msgs()]
                 should_terminate_sequence, content, reward, metrics = await self.interaction.generate_response(_req.request_id, messages, **_req.interaction_kwargs)
                 user_turn_rewards.append(reward)
                 if should_terminate_sequence:
@@ -890,7 +853,7 @@ class SGLangRollout(BaseRollout):
                     break
                 else:
                     _req.add_user_message(self.tokenizer, content)
-                    if len(_req.input_ids) >= self.config.max_model_len:
+                    if _req.get_next_input_ids_len() >= self.config.max_model_len:
                         finish_reason_type = FinishReasonTypeEnum.STOP
                         break
                     else:
@@ -923,7 +886,7 @@ class SGLangRollout(BaseRollout):
 
         return _req
 
-    async def _handle_engine_call(self, _req: AsyncRolloutRequest, sampling_params: dict) -> dict:
+    async def _handle_engine_call(self, _req: AsyncRolloutRequestInterface, sampling_params: dict) -> dict:
         generation_prompt_ids = _req.get_generation_prompt_ids(self.tokenizer)
         max_new_tokens = min(self.config.response_length, self.config.max_model_len - len(generation_prompt_ids) - 1)
         kwargs = sampling_params.copy()
@@ -936,7 +899,7 @@ class SGLangRollout(BaseRollout):
         )
         return output
 
-    async def _handle_pending_state(self, _req: AsyncRolloutRequest) -> AsyncRolloutRequest:
+    async def _handle_pending_state(self, _req: AsyncRolloutRequestInterface) -> None:
         if _req.tool_schemas is not None:
             tool_creation_coroutines = []
             for tool_schema in _req.tool_schemas:
@@ -1121,32 +1084,60 @@ class SGLangRollout(BaseRollout):
                     _interaction_kwargs = prompts.non_tensor_batch["interaction_kwargs"][data_idx]
                 else:
                     _interaction_kwargs = {}
-                breakpoint()
-                req = AsyncRolloutRequest(
-                    batch_data_id=data_idx,
-                    rollout_offset=rollout_offset,
-                    request_id=str(uuid4()),
-                    state=AsyncRolloutRequestStateEnum.PENDING,
-                    messages=raw_prompt.tolist(),
-                    tool_schemas=_tool_schemas,
-                    tools_kwargs=_tools_kwargs,
-                    interaction_kwargs=_interaction_kwargs,
-                    input_ids=_input_ids,
-                    response_ids=[],
-                    attention_mask=_attention_mask,
-                    response_attention_mask=[],
-                    response_position_ids=[],
-                    response_loss_mask=[],
-                    reward_scores={},
-                    to_log_stats={},
-                    max_prompt_len=self.config.prompt_length,
-                    max_response_len=self.config.response_length,
-                    max_model_len=min(self.config.max_model_len, self.config.prompt_length + self.config.response_length),
-                    use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
-                    force_thinking=self.config.multi_turn.force_thinking,
-                    enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
-                    tokenizer=self.tokenizer,
-                )
+                # breakpoint()
+                if self.config.multi_turn.multi_context:
+                    req = AsyncRolloutRequestMultiContext(
+                        batch_data_id=data_idx,
+                        rollout_offset=rollout_offset,
+                        request_id=str(uuid4()),
+                        state=AsyncRolloutRequestStateEnum.PENDING,
+                        messages=[raw_prompt.tolist()],
+                        tool_schemas=_tool_schemas,
+                        tools_kwargs=_tools_kwargs,
+                        interaction_kwargs=_interaction_kwargs,
+                        input_ids=[_input_ids],
+                        response_ids=[],
+                        attention_mask=[_attention_mask],
+                        response_attention_mask=[],
+                        response_position_ids=[],
+                        response_loss_mask=[],
+                        reward_scores={},
+                        to_log_stats={},
+                        max_prompt_len=self.config.prompt_length,
+                        max_response_len=self.config.response_length,
+                        max_model_len=min(self.config.max_model_len, self.config.prompt_length + self.config.response_length),
+                        use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
+                        force_thinking=self.config.multi_turn.force_thinking,
+                        enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
+                        tokenizer=self.tokenizer,
+                    )
+
+                else:
+                    req = AsyncRolloutRequest(
+                        batch_data_id=data_idx,
+                        rollout_offset=rollout_offset,
+                        request_id=str(uuid4()),
+                        state=AsyncRolloutRequestStateEnum.PENDING,
+                        messages=raw_prompt.tolist(),
+                        tool_schemas=_tool_schemas,
+                        tools_kwargs=_tools_kwargs,
+                        interaction_kwargs=_interaction_kwargs,
+                        input_ids=_input_ids,
+                        response_ids=[],
+                        attention_mask=_attention_mask,
+                        response_attention_mask=[],
+                        response_position_ids=[],
+                        response_loss_mask=[],
+                        reward_scores={},
+                        to_log_stats={},
+                        max_prompt_len=self.config.prompt_length,
+                        max_response_len=self.config.response_length,
+                        max_model_len=min(self.config.max_model_len, self.config.prompt_length + self.config.response_length),
+                        use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
+                        force_thinking=self.config.multi_turn.force_thinking,
+                        enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
+                        tokenizer=self.tokenizer,
+                    )
 
                 error_message = f"Request {req.request_id} has mismatched lengths: input_ids={len(req.input_ids)}, attention_mask={len(req.attention_mask)}, position_ids={len(req.position_ids)}, loss_mask={len(req.loss_mask)}"
                 assert len(req.input_ids) == len(req.attention_mask) == len(req.position_ids) == len(req.loss_mask), error_message
