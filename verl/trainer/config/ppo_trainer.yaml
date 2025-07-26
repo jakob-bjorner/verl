@@ -11,7 +11,7 @@ data:
   tokenizer: null
 
   #jakob chat template
-  chat_template: null
+  # chat_template: null
 
   # Whether to use shared memory for data loading.
   use_shm: False
