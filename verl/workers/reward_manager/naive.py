@@ -77,7 +77,7 @@ class NaiveRewardManager:
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
             extra_info = data_item.non_tensor_batch.get("extra_info", None)
 
-            score = self.compute_score(
+            score = self.compute_score( # TODO: right now i just support outcome based rewards with the interaction object. i dont think people's normal reward functions will work well.
                 data_source=data_source,
                 solution_str=response_str,
                 ground_truth=ground_truth,
@@ -99,8 +99,12 @@ class NaiveRewardManager:
 
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
-                print("[prompt]", prompt_str)
-                print("[response]", response_str)
+                request_ids = data.non_tensor_batch['request_ids']
+                contexts_ids = [j for j, x in enumerate(request_ids) if request_ids[i] == x]
+                contexts = self.tokenizer.batch_decode(data.batch['input_ids'][contexts_ids], skip_special_tokens=True)
+                # print("[prompt]", prompt_str)
+                # print("[response]", response_str)
+                print("[context(s)]", "\n------------\n------------\n".join(contexts))
                 print("[ground_truth]", ground_truth)
                 if isinstance(score, dict):
                     for key, value in score.items():

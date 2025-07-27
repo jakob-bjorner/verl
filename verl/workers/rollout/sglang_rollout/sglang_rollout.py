@@ -24,6 +24,7 @@ from copy import deepcopy
 from json import JSONDecodeError
 from typing import List, Optional, Tuple
 from uuid import uuid4
+from types import SimpleNamespace
 
 import numpy as np
 import sglang.srt.entrypoints.engine
@@ -958,10 +959,39 @@ class SGLangRollout(BaseRollout):
         prompt_loss_mask, response_loss_mask = [], []
         messages = []
         reward_scores = []
-        # Jakob just support something generic so I can log thing in the multi turn setting. 
-        # Like attempts, attempts when successful, fraction unsuccessful, fraction incomplete, (should log per run success, completion, and # attempts, and synthesize these numbers later.)
-        # tokens generated per assistant call. (should log just the number of tokens in the assistant messages.)
+        request_ids = []
+        context_indices = []
         to_log_stats = []
+
+        # breakpoint() # checking tensor dims.
+        # the code is messy, but eventually we plan to remove the AsyncRolloutRequest and replace with AsyncRolloutRequestMultiContext with single context.
+        new_sorted_output_req_list = []
+        if self.config.multi_turn.multi_context:
+            for req in sorted_output_req_list:
+                for idx in range(len(req.input_ids)): # number of contexts
+                    new_sorted_output_req_list.append(SimpleNamespace(**dict(
+                                                                    request_id = req.request_id,
+                                                                    context_index = idx,
+                                                                    state = req.state,
+                                                                    reward_scores = req.reward_scores,
+                                                                    to_log_stats = req.to_log_stats,
+                                                                    max_model_len = req.max_model_len,
+                                                                    input_ids = req.input_ids[idx],
+                                                                    attention_mask = req.attention_mask[idx],
+                                                                    position_ids = req.position_ids[idx],
+                                                                    prompt_ids = req.prompt_ids[idx],
+                                                                    loss_mask = req.loss_mask[idx],
+                                                                    response_ids = req.response_ids[idx],
+                                                                    prompt_attention_mask = req.prompt_attention_mask[idx],
+                                                                    response_attention_mask = req.response_attention_mask[idx],
+                                                                    prompt_position_ids = req.prompt_position_ids[idx],
+                                                                    response_position_ids = req.response_position_ids[idx],
+                                                                    prompt_loss_mask = req.prompt_loss_mask[idx],
+                                                                    response_loss_mask = req.response_loss_mask[idx],
+                                                                    messages = req.messages[idx],
+                                                                    )))
+            sorted_output_req_list = new_sorted_output_req_list
+
         for req in sorted_output_req_list:
             assert req.state == AsyncRolloutRequestStateEnum.COMPLETED, f"Request {req.request_id} is not completed"
             assert len(req.input_ids) == len(req.attention_mask) == len(req.position_ids) == len(req.loss_mask), f"""Request {req.request_id} has different length of 
@@ -993,6 +1023,8 @@ class SGLangRollout(BaseRollout):
             response_loss_mask.append(torch.tensor(req.response_loss_mask, dtype=torch.int, device=tgt_device))
             messages.append({"messages": req.messages})
             reward_scores.append(req.reward_scores)
+            request_ids.append(req.request_id)
+            context_indices.append(req.context_index)
             to_log_stats.append(req.to_log_stats)
 
         prompt_ids = pad_sequence(
@@ -1059,6 +1091,8 @@ class SGLangRollout(BaseRollout):
             non_tensor_batch={
                 "messages": np.array(messages),
                 "reward_scores": np.array(reward_scores),
+                "request_ids": np.array(request_ids),
+                "context_indices": np.array(context_indices),
                 "to_log_stats": np.array(to_log_stats),
             },
             # add item here for trajectory index?
@@ -1084,7 +1118,7 @@ class SGLangRollout(BaseRollout):
                     _interaction_kwargs = prompts.non_tensor_batch["interaction_kwargs"][data_idx]
                 else:
                     _interaction_kwargs = {}
-                # breakpoint()
+                
                 if self.config.multi_turn.multi_context:
                     req = AsyncRolloutRequestMultiContext(
                         batch_data_id=data_idx,

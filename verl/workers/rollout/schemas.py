@@ -88,6 +88,7 @@ class AsyncRolloutRequestInterface(ABC):
     base_conv_with_gen_prompt_end_pos: int
     is_gen_belief: bool = False
     turn: int = 0
+    context_index: int = 0 # for bookkeeping during validation logging
     
     @abstractmethod
     def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer) -> list[int]:
@@ -397,6 +398,10 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         values["loss_mask"] = [[]]
         values["prompt_loss_mask"] = [[]]
         values["generation_prompt_ids"] = [[]]
+        values["response_ids"] = [[]]
+        values['response_attention_mask'] = [[]]
+        values["response_position_ids"] = [[]]
+        values["response_loss_mask"] = [[]]
 
         if not values.get("input_ids") or not values.get("attention_mask"):
             tokenization_dict_with_prompt = tokenizer.apply_chat_template(messages[0], tools=[tool.model_dump() for tool in tool_schemas], add_generation_prompt=True, tokenize=True, return_dict=True)
@@ -546,6 +551,7 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         # finalize all contexts
         for i in range(len(self.messages)):
             self._finalize_context(tokenizer, reward_scores, finish_reason_type, i)
+        self.truncate_output_ids(tokenizer)
 
     def _finalize_context(self, tokenizer: PreTrainedTokenizer, reward_scores: Dict[str, List[float]], finish_reason_type: FinishReasonTypeEnum, index: int) -> None:
         self.state = AsyncRolloutRequestStateEnum.COMPLETED
@@ -568,7 +574,6 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
             pass
         else:
             raise ValueError(f"Unsupported finalize finish reason type: {finish_reason_type}")
-        self.truncate_output_ids(tokenizer)
         assert len(self.input_ids[index]) == len(self.attention_mask[index]) == len(self.position_ids[index]) == len(self.loss_mask[index]), f"""Request {self.request_id} context {index} has different length of {len(self.input_ids[index])=}, {len(self.attention_mask[index])=}, {len(self.position_ids[index])=}, {len(self.loss_mask[index])=}"""
 
     def truncate_output_ids(self, tokenizer: PreTrainedTokenizer) -> None:

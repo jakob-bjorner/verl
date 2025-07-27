@@ -50,7 +50,7 @@ fi
 # DEBUG=debuggy INSTRUCT=False RAY_DEBUG=1 CUDA_VISIBLE_DEVICES="2" B=3 GPUS=1 MICRO_BATCH_SIZE=4 TRAIN_BATCH_SIZE=16 N_ROLLOUT=4 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=test_base DSET=interaction_base_base INSTRUCT=False B=7 GPUS=4 MICRO_BATCH_SIZE=4 N_ROLLOUT=1 TRAIN_BATCH_SIZE=16 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q2_5_7b_base DSET=interaction_base_base INSTRUCT=False B=7 GPUS=4 MICRO_BATCH_SIZE=4 N_ROLLOUT=2 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=debug DSET=interaction_base INSTRUCT=True B=0.5 GPUS=1 CUDA_VISIBLE_DEVICES="3" MICRO_BATCH_SIZE=1 N_ROLLOUT=1 TRAIN_BATCH_SIZE=1 TP=1 MULTI_CONTEXT=True bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=debug DSET=interaction_base INSTRUCT=True B=0.5 GPUS=1 CUDA_VISIBLE_DEVICES="3" MICRO_BATCH_SIZE=1 N_ROLLOUT=2 TRAIN_BATCH_SIZE=1 TP=1 MULTI_CONTEXT=True bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
 python3 -m verl.trainer.main_ppo \

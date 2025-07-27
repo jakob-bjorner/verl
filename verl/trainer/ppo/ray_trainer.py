@@ -21,7 +21,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import json
 import os
 import uuid
-from collections import defaultdict
+from collections import defaultdict, Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
@@ -251,20 +251,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=grpo_calculation_mask,
             index=data.non_tensor_batch["uid"],
+            request_ids=data.non_tensor_batch["request_ids"],
             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
-    elif adv_estimator == AdvantageEstimator.GRPO_MT:
-        # Compute advantages and returns using GRPO for multi-turn conversations
-        advantages, returns = core_algos.compute_grpo_outcome_advantage(
-            token_level_rewards=data.batch["token_level_rewards"],
-            response_mask=data.batch["response_mask"],
-            index=data.non_tensor_batch["uid"],
-            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-            multi_context_tensors=True,
-            rollout_ids=None, # might need to update?
-        )
     else:
         # handle all other adv estimator type other than GAE and GRPO
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
@@ -630,7 +621,6 @@ class RayPPOTrainer:
             input_ids = test_batch.batch["input_ids"]
             # TODO: Can we keep special tokens except for padding tokens?
             input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
-            sample_inputs.extend(input_texts)
 
             batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
@@ -673,7 +663,28 @@ class RayPPOTrainer:
             output_ids = test_output_gen_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
+            if test_output_gen_batch.batch.batch_size != test_batch.batch.batch_size:
+                #TODO:this is gross. also fix the display scores
+                # as of 3.7 Counter will always be correctly ordered according to insertion
+                request_ids = test_output_gen_batch.non_tensor_batch['request_ids'].tolist()
+                context_counts = Counter(request_ids)
+                repeat_times = list(context_counts.values())
+                sample_inputs.extend(np.repeat(input_texts, repeat_times, axis=0))
+                test_batch = test_batch.sample_level_repeat(repeat_times)
+                displayed_inputs = ["Nothing to see yet"] * len(repeat_times)
+                displayed_outputs = []
+                for request_id in context_counts:
+                    contexts_ids = [j for j, x in enumerate(request_ids) if request_id == x]
+                    contexts = self.tokenizer.batch_decode(test_output_gen_batch.batch['input_ids'][contexts_ids], skip_special_tokens=True)
+                    displayed_outputs.append("\n------------\n------------\n".join(contexts))
+            else:
+                sample_inputs.extend(input_texts)
+                displayed_inputs = sample_inputs
+                displayed_outputs = sample_outputs
+                display_scores = sample_scores
 
+            # modify repeat method to work nicely for the multi context and non multi context versions.
+            # TODO: check that this doesn't cause bug.
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
@@ -691,7 +702,9 @@ class RayPPOTrainer:
 
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
 
-        self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
+            # if len(sample_scores) != len(displayed_inputs):
+            #     display_scores = 
+        self._maybe_log_val_generations(inputs=displayed_inputs, outputs=displayed_outputs, scores=display_scores)
 
         # dump generations
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
@@ -984,7 +997,6 @@ class RayPPOTrainer:
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
-                # breakpoint()
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
@@ -1015,6 +1027,14 @@ class RayPPOTrainer:
                     batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    if gen_batch_output.batch.batch_size != batch.batch.batch_size:
+                        # as of 3.7 Counter will always be correctly ordered according to insertion
+                        repeat_times = list(Counter(gen_batch_output.non_tensor_batch['request_ids'].tolist()).values())
+                        # sample_inputs.extend(np.repeat(input_texts, repeat_times, axis=0))
+                        batch = batch.sample_level_repeat(repeat_times)
+                    # else:
+                    #     sample_inputs.extend(input_texts)
+                    # TODO: breakpoint ensure uninon doesnt mess with anything.
                     batch = batch.union(gen_batch_output)
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
@@ -1193,7 +1213,10 @@ class RayPPOTrainer:
                     # need to construct a line per generation? or one per step? I think one per step is simple and conveys something useful.
                     # how do I convert all the message objects to dicts whereever they are in the nested dict? I could just do a discusting tree map code myself. its not so bad, but I don't want to.
                     for key in batch.non_tensor_batch:
-                        batch.non_tensor_batch[key] = list(batch.non_tensor_batch[key])
+                        if batch.non_tensor_batch[key].dtype == np.int64:
+                            batch.non_tensor_batch[key] = batch.non_tensor_batch[key].tolist()
+                        else:
+                            batch.non_tensor_batch[key] = list(batch.non_tensor_batch[key])
                     if "messages" in batch.non_tensor_batch:
                         new_messages = []
                         for messages in batch.non_tensor_batch['messages']:
