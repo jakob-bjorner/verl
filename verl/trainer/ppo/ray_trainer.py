@@ -606,6 +606,9 @@ class RayPPOTrainer:
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+        displayed_inputs = []
+        displayed_outputs = []
+        displayed_scores = []
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -648,6 +651,7 @@ class RayPPOTrainer:
 
             # pad to be divisible by dp_size
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+            # breakpoint()
             if not self.async_rollout_mode:
                 test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
             else:
@@ -663,6 +667,9 @@ class RayPPOTrainer:
             output_ids = test_output_gen_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
+
+            # breakpoint()
+
             if test_output_gen_batch.batch.batch_size != test_batch.batch.batch_size:
                 #TODO:this is gross. also fix the display scores
                 # as of 3.7 Counter will always be correctly ordered according to insertion
@@ -671,27 +678,38 @@ class RayPPOTrainer:
                 repeat_times = list(context_counts.values())
                 sample_inputs.extend(np.repeat(input_texts, repeat_times, axis=0))
                 test_batch = test_batch.sample_level_repeat(repeat_times)
-                displayed_inputs = ["Nothing to see yet"] * len(repeat_times)
-                displayed_outputs = []
+                test_batch = test_batch.union(test_output_gen_batch)
+                result = self.val_reward_fn(test_batch, return_dict=True)
+                reward_tensor = result["reward_tensor"]
+                scores = reward_tensor.sum(-1).cpu().tolist()
+                sample_scores.extend(scores)
+                                
                 for request_id in context_counts:
                     contexts_ids = [j for j, x in enumerate(request_ids) if request_id == x]
                     contexts = self.tokenizer.batch_decode(test_output_gen_batch.batch['input_ids'][contexts_ids], skip_special_tokens=True)
                     displayed_outputs.append("\n------------\n------------\n".join(contexts))
+                    displayed_scores.append(scores[contexts_ids[-1]])
+                    displayed_inputs.append('Nothing to see here.')
             else:
+                test_batch = test_batch.union(test_output_gen_batch)
+                result = self.val_reward_fn(test_batch, return_dict=True)
+                reward_tensor = result["reward_tensor"]
+                scores = reward_tensor.sum(-1).cpu().tolist()
+                sample_scores.extend(scores)
                 sample_inputs.extend(input_texts)
                 displayed_inputs = sample_inputs
                 displayed_outputs = sample_outputs
-                display_scores = sample_scores
+                displayed_scores = sample_scores
 
             # modify repeat method to work nicely for the multi context and non multi context versions.
-            # TODO: check that this doesn't cause bug.
-            test_batch = test_batch.union(test_output_gen_batch)
+            # TODO: check that this doesn't cause bug. putting it inside both if and else
+            # test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
-            result = self.val_reward_fn(test_batch, return_dict=True)
-            reward_tensor = result["reward_tensor"]
-            scores = reward_tensor.sum(-1).cpu().tolist()
-            sample_scores.extend(scores)
+            # result = self.val_reward_fn(test_batch, return_dict=True)
+            # reward_tensor = result["reward_tensor"]
+            # scores = reward_tensor.sum(-1).cpu().tolist()
+            # sample_scores.extend(scores)
 
             reward_extra_infos_dict["reward"].extend(scores)
             print(f"len reward_extra_infos_dict['reward']: {len(reward_extra_infos_dict['reward'])}")
@@ -703,8 +721,8 @@ class RayPPOTrainer:
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
 
             # if len(sample_scores) != len(displayed_inputs):
-            #     display_scores = 
-        self._maybe_log_val_generations(inputs=displayed_inputs, outputs=displayed_outputs, scores=display_scores)
+            #     displayed_scores = 
+        self._maybe_log_val_generations(inputs=displayed_inputs, outputs=displayed_outputs, scores=displayed_scores)
 
         # dump generations
         val_data_dir = self.config.trainer.get("validation_data_dir", None)

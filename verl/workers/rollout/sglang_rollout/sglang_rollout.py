@@ -1026,7 +1026,7 @@ class SGLangRollout(BaseRollout):
             request_ids.append(req.request_id)
             context_indices.append(req.context_index)
             to_log_stats.append(req.to_log_stats)
-
+        # breakpoint() 
         prompt_ids = pad_sequence(
             prompt_ids,
             batch_first=True,
@@ -1067,7 +1067,7 @@ class SGLangRollout(BaseRollout):
         attention_mask = torch.cat((prompt_attention_mask, response_attention_mask), dim=-1)
         position_ids = torch.cat((prompt_position_ids, response_position_ids), dim=-1)
         loss_mask = torch.cat((prompt_loss_mask, response_loss_mask), dim=-1)
-
+        breakpoint()
         # Construct the batch data
         batch = TensorDict(
             {
