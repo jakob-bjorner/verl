@@ -462,20 +462,25 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         agent_first_message = self._get_agent_first_message()
         no_prior_belief_exists = bool(self.turn == 1)
         if no_prior_belief_exists:
-            belief_state: str = "<BELIEF> No prior belief. </BELIEF>"
+            belief_state: str = "<belief> No prior belief. </belief>"
         else:
             belief_state: str = self.messages[-2][-1].content
-        if "<BELIEF>" in belief_state:
-            belief_state = belief_state.split("<BELIEF>")[1]
-        if "</BELIEF>" in belief_state:
-            belief_state = belief_state.split("</BELIEF>")[0]
+        if "<belief>" in belief_state:
+            belief_state = belief_state.split("<belief>")[1]
+        if "</belief>" in belief_state:
+            belief_state = belief_state.split("</belief>")[0]
         belief_state = belief_state.strip()
-        agent_action = self.messages[-1][-2].content
+        
+        agent_action = self.messages[-1][-2].content.lower()
+        if "<action>" in agent_action and "</action>" in agent_action:
+            agent_action = agent_action.split("<action>")[1].split("</action>")[0].strip()
+        else:
+            agent_action = "invalid action"
         env_response = self.messages[-1][-1].content
         # we take the last action for now. 
         # if we want to support multiple actions between belief updates can that do later. 
         # also consider making belief generation after the feedback in the same message chain instead of in seperate prompt.
-        return [Message(role="user", content=f"Update the belief state based on the agent's action and environment response. Compress the context for an agent taking an action. Remove redundant information and maintain important information about the game state needed to take optimal future actions.\nGlobal Instruction: {agent_first_message}\nCurrent belief state: {belief_state}\nAgent's action: {agent_action}\nEnvironment's response: {env_response}\nOutput the updated belief state inside <BELIEF> and </BELIEF> tags.")]
+        return [Message(role="user", content=f"{agent_first_message}\nNow update your beliefs based on the last action and environment feedback. Remove redundant information and maintain important information needed to take optimal future actions.\n Current belief: <belief>{belief_state}</belief>\nLast action: <action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nThink step by step and then output the updated belief inside <belief> ... </belief>.")]
     def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer) -> list[int]:
         if self.is_gen_belief:
             self._add_new_context(self._get_belief_context_messages(), tokenizer)
@@ -516,11 +521,13 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         agent_first_message = self._get_agent_first_message()
         # take content generated from belief state message
         belief_state = self.messages[-1][-1].content
-        if "<BELIEF>" in belief_state:
-            belief_state = belief_state.split("<BELIEF>")[1]
-        if "</BELIEF>" in belief_state:
-            belief_state = belief_state.split("</BELIEF>")[0]
-        return [Message(role="user", content=f'Global Instruction: {agent_first_message}\nCurrent belief state: {belief_state}\nNow make your next action based on the global instruction and current belief.')]
+        if "<belief>" in belief_state:
+            belief_state = belief_state.split("<belief>")[1]
+        if "</belief>" in belief_state:
+            belief_state = belief_state.split("</belief>")[0]
+        return [Message(role="user", content=f'Global Instruction: {agent_first_message}\nCurrent belief: <belief>{belief_state}</belief>\nNow think step by step and then choose your next action based on the global instruction and current belief. Make sure you write your action inside <action> ... </action>.')]
+     #return [Message(role="user", content=f'{env_instructions}\nYour current belief is:<belief>{belief_state}</belief>\n Now make your next query in the format:\n Assistant: <think> ... </think><action> ... </action>.\n Assistant: <think>')]
+
 
     def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content: str, tool_calls: Optional[List[OpenAIFunctionToolCall]] = None) -> None:
         self.messages[-1].append(Message(role="assistant", content=content, tool_calls=tool_calls))
