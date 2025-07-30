@@ -59,7 +59,7 @@ class ComboLockInteraction(BaseInteraction):
         env = CombinationLock(combination_length, max_attempts, vocab)
         env.reset()
         env.target_combination = "".join(map(str, ground_truth))
-        self._instance_dict[instance_id] = {"env": env, "format": format}
+        self._instance_dict[instance_id] = {"env": env, "format": format, "invalid_format_errors": 0}
         
         return instance_id
 
@@ -68,6 +68,7 @@ class ComboLockInteraction(BaseInteraction):
         content = messages[-1]['content'] # I assume the last message given will be the assistant waiting for a user response?
         contents, valid, error_msg = process_msg_content(content, tag_list=['action'])
         if not valid:
+            self._instance_dict[instance_id]["invalid_format_errors"] += 1
             return False, error_msg, 0.0, {}
         guess = process_guess_msg(contents[0], mdp.vocab, mdp.combination_length)
         if not mdp._is_valid_guess(guess):
@@ -76,6 +77,7 @@ class ComboLockInteraction(BaseInteraction):
             #     # we are done.
             #     return True, "DONE", -1.0, {} # this should only happen when you run out on your last guess because it is unclear.
             content_summary = contents[0] if len(contents[0]) < 20 else f"...{contents[0][-20:]}"
+            self._instance_dict[instance_id]["invalid_format_errors"] += 1
             return False, f"Could not parse valid guess from: '{content_summary}'. Please ensure the guess is contained in the final characters of your response, and using only use the characters from the vocab in your guess characters. Do not repeat characters in your guess.", 0.0, {}
         obs, reward, done, info = mdp.step(guess)
         str_response_in_tool_call = ""
@@ -111,7 +113,8 @@ class ComboLockInteraction(BaseInteraction):
     def get_attempts(self, instance_id: str) -> int:
         return self._instance_dict[instance_id]['env'].current_attempt
     def get_trajectory_info(self, instance_id: str) -> dict:
-        return self._instance_dict[instance_id]['env'].get_trajectory_info()
+        return self._instance_dict[instance_id]['env'].get_trajectory_info() | {"invalid_format_errors": self._instance_dict[instance_id]["invalid_format_errors"]}
+    
     async def calculate_score(self, instance_id: str, **kwargs) -> float:
         # this is used in  sglang_rollout.py, and we ignore the step level reward to account for early terminating sequences.
         return self._instance_dict[instance_id]['env'].get_trajectory_score() 

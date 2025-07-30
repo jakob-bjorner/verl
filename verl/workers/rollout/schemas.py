@@ -480,7 +480,7 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         # we take the last action for now. 
         # if we want to support multiple actions between belief updates can that do later. 
         # also consider making belief generation after the feedback in the same message chain instead of in seperate prompt.
-        return [Message(role="user", content=f"{agent_first_message}\nNow update your beliefs based on the last action and environment feedback. Remove redundant information and maintain important information needed to take optimal future actions.\n Current belief: <belief>{belief_state}</belief>\nLast action: <action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nThink step by step and then output the updated belief inside <belief> ... </belief>.")]
+        return [Message(role="user", content=f"{agent_first_message}\nYour current belief state: <belief>{belief_state}</belief>\nYour last action:\n<action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nNow update your belief state to include all important new information you have gathered.\nDo not say anything about future actions. Think step by step and then output your new belief state inside <belief> ... </belief>, e.g., <think>Any short and concise thinking</think><belief>your new beliefs</belief>.\n")]
     def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer) -> list[int]:
         if self.is_gen_belief:
             self._add_new_context(self._get_belief_context_messages(), tokenizer)
@@ -525,7 +525,7 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
             belief_state = belief_state.split("<belief>")[1]
         if "</belief>" in belief_state:
             belief_state = belief_state.split("</belief>")[0]
-        return [Message(role="user", content=f'Global Instruction: {agent_first_message}\nCurrent belief: <belief>{belief_state}</belief>\nNow think step by step and then choose your next action based on the global instruction and current belief. Make sure you write your action inside <action> ... </action>.')]
+        return [Message(role="user", content=f"Global Instruction: {agent_first_message}\nCurrent belief: <belief>{belief_state}</belief>\nNow think step by step and then output your next action formatted as a list of 3 characters inside <action> ... </action>, e.g.,<think>Any step by step, short and concise thinking to determine your next action</think><action>['char 1', 'char 2', 'char 3']</action>.\n")]
      #return [Message(role="user", content=f'{env_instructions}\nYour current belief is:<belief>{belief_state}</belief>\n Now make your next query in the format:\n Assistant: <think> ... </think><action> ... </action>.\n Assistant: <think>')]
 
 
