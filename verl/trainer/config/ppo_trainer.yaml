@@ -390,7 +390,7 @@ actor_rollout_ref:
     is_instruct_model: True
 
     # Sampling temperature for rollout.
-    temperature: 1.0
+    temperature: 1
 
     # Top-k sampling parameter. -1 for vLLM rollout, 0 for HF rollout.
     top_k: -1
