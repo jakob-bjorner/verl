@@ -659,12 +659,16 @@ class DataProto:
         Returns:
             List[DataProto]: a list of DataProto after splitting
         """
-        if not self.is_padding_enabled():
-            assert len(self) % chunks == 0, f"only support equal chunk. Got size of DataProto {len(self)} and chunk {chunks}."
+        # jakob: need to rempve this restriction for tp support in multicontext
+        # if not self.is_padding_enabled():
+        #     assert len(self) % chunks == 0, f"only support equal chunk. Got size of DataProto {len(self)} and chunk {chunks}."
 
         bsz_in_batch = None
         if self.batch is not None:
-            batch_lst = self.batch.chunk(chunks=chunks, dim=0)
+            # jakob: custom implementation of torch.tensor_split/np.array_split needed for spliting uneven tensors for tp support.
+            split_ids = np.array_split(list(range(self.batch.batch_size[0])), chunks)
+            batch_lst = [self.batch[s] for s in split_ids]
+            # batch_lst = self.batch.chunk(chunks=chunks, dim=0) # Jakob: previous implementation
             bsz_in_batch = np.array([batch.batch_size[0] for batch in batch_lst])
             chunk_indices = np.cumsum(bsz_in_batch)[:-1]
         else:

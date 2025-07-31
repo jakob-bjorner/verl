@@ -650,6 +650,8 @@ class RayPPOTrainer:
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
             # pad to be divisible by dp_size
+            # import pdb; pdb.set_trace()
+            # test_gen_batch_padded = test_gen_batch
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
             # breakpoint()
             if not self.async_rollout_mode:
@@ -660,7 +662,14 @@ class RayPPOTrainer:
                 self.async_rollout_manager.sleep()
 
             # unpad
-            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+            # test_output_gen_batch = test_output_gen_batch_padded # why pad????
+            if self.config.actor_rollout_ref.rollout.multi_turn.multi_context:
+                request_ids = test_output_gen_batch_padded.non_tensor_batch['request_ids'].tolist()
+                context_counts = Counter(request_ids)
+                pad_size_contexts = sum(context_counts[request_id] for request_id in list(context_counts.keys())[-pad_size:])
+                test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size_contexts)
+            else:
+                test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             print("validation generation end")
 
             # Store generated outputs
@@ -668,15 +677,15 @@ class RayPPOTrainer:
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
 
-            # breakpoint()
-
-            if test_output_gen_batch.batch.batch_size != test_batch.batch.batch_size:
+            print((f"{test_output_gen_batch.batch.batch_size=}, {test_batch.batch.batch_size=}"))
+            if self.config.actor_rollout_ref.rollout.multi_turn.multi_context: # test_output_gen_batch.batch.batch_size != test_batch.batch.batch_size:
                 #TODO:this is gross. also fix the display scores
-                # as of 3.7 Counter will always be correctly ordered according to insertion
+                # as of python 3.7 Counter will always be correctly ordered according to insertion
                 request_ids = test_output_gen_batch.non_tensor_batch['request_ids'].tolist()
                 context_counts = Counter(request_ids)
                 repeat_times = list(context_counts.values())
-                sample_inputs.extend(np.repeat(input_texts, repeat_times, axis=0))
+                # print(input_texts, repeat_times)
+                sample_inputs.extend(np.repeat(input_texts, repeat_times, axis=0)) 
                 test_batch = test_batch.sample_level_repeat(repeat_times)
                 test_batch = test_batch.union(test_output_gen_batch)
                 result = self.val_reward_fn(test_batch, return_dict=True)

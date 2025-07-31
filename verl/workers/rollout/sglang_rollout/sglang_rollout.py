@@ -315,8 +315,9 @@ class SGLangRollout(BaseRollout):
     def _verify_config(self, model_hf_config):
         if not self.config.get("max_model_len", None):
             self.config.max_model_len = self.config.prompt_length + self.config.response_length
-        assert self.config.max_model_len >= self.config.prompt_length + self.config.response_length, f"""max_model_len should be greater than total sequence length (prompt_length + response_length): 
-            {self.config.max_model_len} >= {self.config.prompt_length} + {self.config.response_length}"""
+        # jakob this doesn't seem necessary, and we actually want a setting where (max_model_len == prompt_length == response_length). So we can restrict the length of the context with max model len.
+        # assert self.config.max_model_len >= self.config.prompt_length + self.config.response_length, f"""max_model_len should be greater than total sequence length (prompt_length + response_length): 
+        #     {self.config.max_model_len} >= {self.config.prompt_length} + {self.config.response_length}"""
         assert model_hf_config.max_position_embeddings >= self.config.max_model_len, "model context length should be greater than total sequence length"
         # currently max_assistant_turns stand for max number of tool calls
         if self.config.multi_turn.max_assistant_turns is None:
@@ -773,26 +774,32 @@ class SGLangRollout(BaseRollout):
             elif _req.state == AsyncRolloutRequestStateEnum.RUNNING:
                 # Only continue the conversation if the prompt length is not greater than max_model_len - 1,
                 # since SGLang raises an error when max_new_tokens + 1 is greater to max_model_len (the extra token accounts for the EOS token).
-                if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
-                    finish_reason_type = FinishReasonTypeEnum.LENGTH
-                    break
                 # every time before generating an action we check if belief state should be calculated.
                 # this will have to call handle engine call for belief generation,
                 if _req.should_generate_belief(): 
-                    _req.is_gen_belief = True
+                    _req.pre_generate_belief_call(self.tokenizer)
+                    if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
+                        finish_reason_type = FinishReasonTypeEnum.LENGTH
+                        break
                     output = await self._handle_engine_call(_req, request_sampling_params) # belief generation.
                     content = output["text"]
-                    _req.add_assistant_message(self.tokenizer, content) 
+                    _req.add_assistant_message(self.tokenizer, content)
+                    if _req.get_next_input_ids_len() >= self.config.max_model_len:
+                        finish_reason_type = FinishReasonTypeEnum.LENGTH
+                        break
                     # it is possible to have a belief state call which requires tools, we will not support this for now. 
-                    _req.is_gen_belief = False
                     # and store the belief in one context with gradient info, (belief generation context)
                     # and then separately in another context without gradient info (action context)
+                    _req.post_generate_belief_call(self.tokenizer)
+                if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
+                    finish_reason_type = FinishReasonTypeEnum.LENGTH
+                    break
                 output = await self._handle_engine_call(_req, request_sampling_params) # action
-                _req.increment_turn()
                 # print('output', output) # this for seeing if I can compute the number of generated tokens easily.
                 tokens_per_assistant_message.append(output['meta_info']['completion_tokens']) # this is characters right now, but want to make it tokens eventually.
                 content = output["text"]
                 finish_reason_type = FinishReasonTypeEnum.from_str(output["meta_info"]["finish_reason"]["type"])
+                _req.increment_turn()
                 current_turns += 1
                 if finish_reason_type == FinishReasonTypeEnum.LENGTH:
                     _req.add_assistant_message(self.tokenizer, content)
@@ -1026,7 +1033,7 @@ class SGLangRollout(BaseRollout):
             request_ids.append(req.request_id)
             context_indices.append(req.context_index)
             to_log_stats.append(req.to_log_stats)
-        # breakpoint() 
+
         prompt_ids = pad_sequence(
             prompt_ids,
             batch_first=True,
@@ -1062,13 +1069,12 @@ class SGLangRollout(BaseRollout):
         response_loss_mask = pad_sequence(response_loss_mask, batch_first=True, padding_value=0)
         if response_loss_mask.shape[1] < self.config.response_length:
             response_loss_mask = pad_sequence_to_length(response_loss_mask, self.config.response_length, 0)
-
         input_ids = torch.cat((prompt_ids, response_ids), dim=-1)
         attention_mask = torch.cat((prompt_attention_mask, response_attention_mask), dim=-1)
         position_ids = torch.cat((prompt_position_ids, response_position_ids), dim=-1)
         loss_mask = torch.cat((prompt_loss_mask, response_loss_mask), dim=-1)
-        breakpoint()
-        # Construct the batch data
+        
+        # breakpoint() # if finishes for len the belief might have caused the next generation's prompt to be too long, and gone undetected. check for this.
         batch = TensorDict(
             {
                 "prompts": prompt_ids,

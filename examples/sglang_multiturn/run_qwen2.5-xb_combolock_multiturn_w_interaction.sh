@@ -21,7 +21,7 @@ FORCE_THINKING=${FORCE_THINKING:-""}
 EPOCHS=${EPOCHS:-15}
 TP=${TP:-2}
 QWEN=${QWEN:-2.5}
-MAX_RESP=${MAX_RESP:-$((1024 * 4))}
+MAX_RESP=${MAX_RESP:-$((1024 * 4))} # max_model_len is determined by this which is max context len.
 INSTRUCT=${INSTRUCT:-True}
 MULTI_CONTEXT=${MULTI_CONTEXT:-False}
 if [ $QWEN -eq 3 ]; then
@@ -50,16 +50,25 @@ fi
 # DEBUG=debuggy INSTRUCT=False RAY_DEBUG=1 CUDA_VISIBLE_DEVICES="2" B=3 GPUS=1 MICRO_BATCH_SIZE=4 TRAIN_BATCH_SIZE=16 N_ROLLOUT=4 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=test_base DSET=interaction_base_base INSTRUCT=False B=7 GPUS=4 MICRO_BATCH_SIZE=4 N_ROLLOUT=1 TRAIN_BATCH_SIZE=16 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q2_5_7b_base DSET=interaction_base_base INSTRUCT=False B=7 GPUS=4 MICRO_BATCH_SIZE=4 N_ROLLOUT=2 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=debug DSET=interaction_base INSTRUCT=True B=0.5 GPUS=1 CUDA_VISIBLE_DEVICES="3" MICRO_BATCH_SIZE=1 N_ROLLOUT=2 TRAIN_BATCH_SIZE=1 TP=1 MULTI_CONTEXT=True bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-
+# DEBUG=debug DSET=interaction_base INSTRUCT=True B=3 GPUS=2 CUDA_VISIBLE_DEVICES="3,5" MICRO_BATCH_SIZE=2 N_ROLLOUT=1 TRAIN_BATCH_SIZE=4 TP=1 MULTI_CONTEXT=True bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# added dset for debug base_one_val
+# DEBUG=q2_5_14b_mt_belief_base DSET=interaction_base INSTRUCT=False B=14 GPUS=8 MICRO_BATCH_SIZE=4 N_ROLLOUT=2 TP=4 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# added use_dynamic_bsz if multi context
+# added balance_batch False if multi context to avoid 
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
+if [ $MULTI_CONTEXT == False ]; then
+    BALANCE_BATCH=True
+else
+    BALANCE_BATCH=False
+fi
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='combolock_multiturn_grpo_w_interaction' \
     algorithm.adv_estimator=grpo \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
-    data.max_prompt_length=1024 \
+    data.max_prompt_length=$MAX_RESP \
     data.max_response_length=$MAX_RESP \
+    actor_rollout_ref.rollout.max_model_len=$MAX_RESP \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
@@ -87,6 +96,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.ref.fsdp_config.param_offload=$OFFLOAD \
     actor_rollout_ref.actor.use_dynamic_bsz=$MULTI_CONTEXT \
+    trainer.balance_batch=$BALANCE_BATCH \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \

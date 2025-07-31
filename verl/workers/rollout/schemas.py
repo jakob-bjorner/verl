@@ -16,7 +16,7 @@ import logging
 import os
 from enum import Enum
 from typing import Any, Dict, List, Optional
-
+from copy import deepcopy
 import torch
 from pydantic import BaseModel, model_validator
 from transformers import PreTrainedTokenizer
@@ -86,7 +86,6 @@ class AsyncRolloutRequestInterface(ABC):
 
     base_conv_wo_gen_prompt_end_pos: int
     base_conv_with_gen_prompt_end_pos: int
-    is_gen_belief: bool = False
     turn: int = 0
     context_index: int = 0 # for bookkeeping during validation logging
     
@@ -138,6 +137,11 @@ class AsyncRolloutRequestInterface(ABC):
         self.turn += 1
     @abstractmethod
     def get_last_msgs(self) -> list[Message]:
+        ...
+    #does nothing by default.
+    def pre_generate_belief_call(self, tokenizer):
+        ...
+    def post_generate_belief_call(self, tokenizer):
         ...
 
 class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
@@ -298,7 +302,13 @@ class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
         self.state = AsyncRolloutRequestStateEnum.COMPLETED
         self.reward_scores = reward_scores
         # print(self.enable_tokenization_sanity_check)
-        # breakpoint() # check tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True), see if it removes thinking. like qwq 32 did in the docs.
+
+        temp_generation_prompt_ids = self.generation_prompt_ids + (tokenizer.encode(self.force_thinking) if self.force_thinking else [])
+        if self.input_ids[-len(temp_generation_prompt_ids) :] == temp_generation_prompt_ids:
+            self.input_ids = self.input_ids[: -len(temp_generation_prompt_ids)]
+            self.attention_mask = self.attention_mask[: -len(temp_generation_prompt_ids)]
+            self.position_ids = self.position_ids[: -len(temp_generation_prompt_ids)]
+            self.loss_mask = self.loss_mask[: -len(temp_generation_prompt_ids)]
         if self.enable_tokenization_sanity_check:
             full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True)
             if self.input_ids != full_tokens:
@@ -311,12 +321,6 @@ class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
                 # this seems to happen because it reaches the max len. will ignore.
 
         # In case we failed to generate the assistant message and the generation prompt ids were already added to input_ids, remove them from the end of input_ids
-        temp_generation_prompt_ids = self.generation_prompt_ids + (tokenizer.encode(self.force_thinking) if self.force_thinking else [])
-        if self.input_ids[-len(temp_generation_prompt_ids) :] == temp_generation_prompt_ids:
-            self.input_ids = self.input_ids[: -len(temp_generation_prompt_ids)]
-            self.attention_mask = self.attention_mask[: -len(temp_generation_prompt_ids)]
-            self.position_ids = self.position_ids[: -len(temp_generation_prompt_ids)]
-            self.loss_mask = self.loss_mask[: -len(temp_generation_prompt_ids)]
 
         self.response_ids = self.input_ids[len(self.prompt_ids) :]
         if finish_reason_type == FinishReasonTypeEnum.STOP:
@@ -440,7 +444,7 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         self.prompt_loss_mask += [[]]
         self.response_loss_mask += [[]]
         self.generation_prompt_ids += [[]]
-        self.messages += [new_context_messages]
+        self.messages += [deepcopy(new_context_messages)]
         tool_schemas = self.tool_schemas if self.tool_schemas else []
         tools = [tool.model_dump() for tool in tool_schemas] if tool_schemas else None
 
@@ -451,13 +455,16 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
             # Only log the warning to avoid truncating in the middle of generation prompt. Consider raising an error for this case in the future.
             logger.warning(f"Prompt {self.batch_data_id} length {len(self.input_ids)} greater than max_prompt_len {self.max_prompt_len} after applied chat template with tools.")
 
-        self.prompt_ids[-1], self.prompt_attention_mask[-1] = self.input_ids[-1], self.attention_mask[-1]
-        self.position_ids[-1] = self.prompt_position_ids[-1] = compute_position_id_with_mask(torch.tensor(self.attention_mask[-1])).tolist()
-        self.loss_mask[-1] = self.prompt_loss_mask[-1] = [0] * len(self.input_ids[-1])
-        self.generation_prompt_ids[-1] = self.input_ids[-1][len(tokens_without_prompt) :]         
+        self.prompt_ids[-1], self.prompt_attention_mask[-1] = deepcopy(self.input_ids[-1]), deepcopy(self.attention_mask[-1])
+        self.position_ids[-1] = compute_position_id_with_mask(torch.tensor(self.attention_mask[-1])).tolist()
+        self.prompt_position_ids[-1] = compute_position_id_with_mask(torch.tensor(self.attention_mask[-1])).tolist()
+        self.loss_mask[-1] = [0] * len(self.input_ids[-1])
+        self.prompt_loss_mask[-1] = [0] * len(self.input_ids[-1])
+        self.generation_prompt_ids[-1] = deepcopy(self.input_ids[-1][len(tokens_without_prompt) :])         
 
     def _get_agent_first_message(self):
         return self.messages[0][0].content # take the first message to be the environment instruction.
+    
     def _get_belief_context_messages(self):
         agent_first_message = self._get_agent_first_message()
         no_prior_belief_exists = bool(self.turn == 1)
@@ -476,11 +483,11 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         # if we want to support multiple actions between belief updates can that do later. 
         # also consider making belief generation after the feedback in the same message chain instead of in seperate prompt.
         return [Message(role="user", content=f"Update the belief state based on the agent's action and environment response. Compress the context for an agent taking an action. Remove redundant information and maintain important information about the game state needed to take optimal future actions.\nGlobal Instruction: {agent_first_message}\nCurrent belief state: {belief_state}\nAgent's action: {agent_action}\nEnvironment's response: {env_response}\nOutput the updated belief state inside <BELIEF> and </BELIEF> tags.")]
+    def pre_generate_belief_call(self, tokenizer):
+        self._add_new_context(self._get_belief_context_messages(), tokenizer)
+        # if belief state being generated, change prompt we use to general belief prompt. 
+        # this might be good spot to put all logic of handling belief gen prompt.
     def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer) -> list[int]:
-        if self.is_gen_belief:
-            self._add_new_context(self._get_belief_context_messages(), tokenizer)
-            ... # if belief state being generated, change prompt we use to general belief prompt. 
-            # this might be good spot to put all logic of handling belief gen prompt.
         if self.force_thinking:
             thought_prompt_ids = tokenizer.encode(self.force_thinking)
             combined_generation_prompt_ids = self.generation_prompt_ids[-1] + thought_prompt_ids
@@ -521,16 +528,16 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         if "</BELIEF>" in belief_state:
             belief_state = belief_state.split("</BELIEF>")[0]
         return [Message(role="user", content=f'Global Instruction: {agent_first_message}\nCurrent belief state: {belief_state}\nNow make your next action based on the global instruction and current belief.')]
+    def post_generate_belief_call(self, tokenizer):
+        # case where belief has just been generated.
+        self._add_new_context(self._get_action_context_messages(), tokenizer)
 
     def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content: str, tool_calls: Optional[List[OpenAIFunctionToolCall]] = None) -> None:
         self.messages[-1].append(Message(role="assistant", content=content, tool_calls=tool_calls))
         content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1][-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
         content_ids = tokenizer.encode(content_str[self.base_conv_with_gen_prompt_end_pos:], add_special_tokens=False)
         self._update_input_ids(content_ids, attention_mask=True, loss_mask=True, index=-1)
-        if self.is_gen_belief:
-            # case where belief has just been generated.
-            self._add_new_context(self._get_action_context_messages(), tokenizer)
-
+        
     def add_tool_response_messages(self, tokenizer: PreTrainedTokenizer, contents: list[str]) -> None:
         if not contents:
             return
@@ -549,32 +556,29 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
 
     def finalize(self, tokenizer: PreTrainedTokenizer, reward_scores: Dict[str, List[float]], finish_reason_type: FinishReasonTypeEnum = FinishReasonTypeEnum.STOP) -> None:
         # finalize all contexts
-        for i in range(len(self.messages)):
-            self._finalize_context(tokenizer, reward_scores, finish_reason_type, i)
-        self.truncate_output_ids(tokenizer)
-
-    def _finalize_context(self, tokenizer: PreTrainedTokenizer, reward_scores: Dict[str, List[float]], finish_reason_type: FinishReasonTypeEnum, index: int) -> None:
         self.state = AsyncRolloutRequestStateEnum.COMPLETED
         self.reward_scores = reward_scores
-        if self.enable_tokenization_sanity_check:
-            full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages[index]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True)
-            if self.input_ids[index] != full_tokens:
-                logger.warning("Inconsistent training and inference tokenization detected. This may lead to unexpected behavior during training. Please review your chat template to determine if this is intentional. For more information, refer to the multiturn README.md.")
-                logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids[index], skip_special_tokens=False)}")
-        temp_generation_prompt_ids = self.generation_prompt_ids[index] + (tokenizer.encode(self.force_thinking) if self.force_thinking else [])
-        if self.input_ids[index][-len(temp_generation_prompt_ids):] == temp_generation_prompt_ids:
-            self.input_ids[index] = self.input_ids[index][:-len(temp_generation_prompt_ids)]
-            self.attention_mask[index] = self.attention_mask[index][:-len(temp_generation_prompt_ids)]
-            self.position_ids[index] = self.position_ids[index][:-len(temp_generation_prompt_ids)]
-            self.loss_mask[index] = self.loss_mask[index][:-len(temp_generation_prompt_ids)]
-        self.response_ids[index] = self.input_ids[index][len(self.prompt_ids[index]):]
-        if finish_reason_type == FinishReasonTypeEnum.STOP:
-            pass
-        elif finish_reason_type == FinishReasonTypeEnum.LENGTH:
-            pass
-        else:
-            raise ValueError(f"Unsupported finalize finish reason type: {finish_reason_type}")
-        assert len(self.input_ids[index]) == len(self.attention_mask[index]) == len(self.position_ids[index]) == len(self.loss_mask[index]), f"""Request {self.request_id} context {index} has different length of {len(self.input_ids[index])=}, {len(self.attention_mask[index])=}, {len(self.position_ids[index])=}, {len(self.loss_mask[index])=}"""
+        for index in range(len(self.messages)):
+            temp_generation_prompt_ids = self.generation_prompt_ids[index] + (tokenizer.encode(self.force_thinking) if self.force_thinking else [])
+            if self.input_ids[index][-len(temp_generation_prompt_ids):] == temp_generation_prompt_ids:
+                self.input_ids[index] = self.input_ids[index][:-len(temp_generation_prompt_ids)]
+                self.attention_mask[index] = self.attention_mask[index][:-len(temp_generation_prompt_ids)]
+                self.position_ids[index] = self.position_ids[index][:-len(temp_generation_prompt_ids)]
+                self.loss_mask[index] = self.loss_mask[index][:-len(temp_generation_prompt_ids)]
+            if self.enable_tokenization_sanity_check:
+                full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages[index]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True)
+                if self.input_ids[index] != full_tokens:
+                    logger.warning("Inconsistent training and inference tokenization detected. This may lead to unexpected behavior during training. Please review your chat template to determine if this is intentional. For more information, refer to the multiturn README.md.")
+                    logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids[index], skip_special_tokens=False)}")
+            self.response_ids[index] = self.input_ids[index][len(self.prompt_ids[index]):]
+            if finish_reason_type == FinishReasonTypeEnum.STOP:
+                pass
+            elif finish_reason_type == FinishReasonTypeEnum.LENGTH:
+                pass
+            else:
+                raise ValueError(f"Unsupported finalize finish reason type: {finish_reason_type}")
+            assert len(self.input_ids[index]) == len(self.attention_mask[index]) == len(self.position_ids[index]) == len(self.loss_mask[index]), f"""Request {self.request_id} context {index} has different length of {len(self.input_ids[index])=}, {len(self.attention_mask[index])=}, {len(self.position_ids[index])=}, {len(self.loss_mask[index])=}"""
+        self.truncate_output_ids(tokenizer)
 
     def truncate_output_ids(self, tokenizer: PreTrainedTokenizer) -> None:
         for index in range(len(self.input_ids)):
