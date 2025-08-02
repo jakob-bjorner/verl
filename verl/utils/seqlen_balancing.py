@@ -269,13 +269,22 @@ def rearrange_micro_batches(batch, max_token_len, dp_group=None, num_batches_div
         # used to support pp
         num_micro_batches = max(min_num_micro_batch, num_micro_batches)
     if dist.is_initialized() and same_micro_num_in_dp:
-        num_micro_batches = torch.tensor([num_micro_batches], device=get_device_name())
+        num_micro_batches = torch.tensor([num_micro_batches, -len(seq_len_effective)], device=get_device_name())
         dist.all_reduce(num_micro_batches, op=dist.ReduceOp.MAX, group=dp_group)
-        num_micro_batches = num_micro_batches.cpu().item()
+        min_len_seq_len_effective = -num_micro_batches[1].cpu().item()
+        if min_len_seq_len_effective == 1 and len(seq_len_effective) > 1 and len(seq_len_effective)*max_seq_len >= max_token_len:
+            raise Exception("this is an edge case where I should better handle to avoid future issue. not solving for now, because its not yet expected to be incountered, but would take a bit of time to implement and test. see comments below")
+        num_micro_batches = min(min_len_seq_len_effective, num_micro_batches[0].cpu().item()) #edge case handling for uneven sizes.
     if num_batches_divided_by is not None:
         num_micro_batches = roundup_divisible(num_micro_batches, num_batches_divided_by)
-
     seq_len_effective = seq_len_effective.tolist()
+    # print(seq_len_effective) # in my implementation, the seq_len_effective can have different lengths. 
+    # there is a possible one batch element difference between devices, which can be the difference between an oom and not, 
+    # because the single batch wont fit in two batches, which the other gpu would want,
+    #  so we would right now force both to have only one micro batch, but i think we dont have to force them to sync every time, 
+    # so why not keep the number of fwd passes different per gpu?
+    # if I run into an oom i should consider this. in fact I'll set an exception just so its obvious if i ever hit this.
+    # breakpoint()
     assert num_micro_batches <= len(seq_len_effective)
 
     micro_bsz_idx = get_seqlen_balanced_partitions(seq_len_effective, num_micro_batches, equal_size=False)

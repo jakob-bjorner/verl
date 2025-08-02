@@ -653,7 +653,6 @@ class RayPPOTrainer:
             # import pdb; pdb.set_trace()
             # test_gen_batch_padded = test_gen_batch
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-            # breakpoint()
             if not self.async_rollout_mode:
                 test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
             else:
@@ -666,7 +665,10 @@ class RayPPOTrainer:
             if self.config.actor_rollout_ref.rollout.multi_turn.multi_context:
                 request_ids = test_output_gen_batch_padded.non_tensor_batch['request_ids'].tolist()
                 context_counts = Counter(request_ids)
-                pad_size_contexts = sum(context_counts[request_id] for request_id in list(context_counts.keys())[-pad_size:])
+                if pad_size:
+                    pad_size_contexts = sum(context_counts[request_id] for request_id in list(context_counts.keys())[-pad_size:])
+                else:
+                    pad_size_contexts = 0
                 test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size_contexts)
             else:
                 test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
@@ -698,7 +700,8 @@ class RayPPOTrainer:
                     contexts = self.tokenizer.batch_decode(test_output_gen_batch.batch['input_ids'][contexts_ids], skip_special_tokens=True)
                     displayed_outputs.append("\n------------\n------------\n".join(contexts))
                     displayed_scores.append(scores[contexts_ids[-1]])
-                    displayed_inputs.append('Nothing to see here.')
+                    displayed_inputs.append("\n".join(map(str, test_output_gen_batch.non_tensor_batch["to_log_stats"][contexts_ids[-1]]["trajectory_info"]["feedback_hist"])))
+
             else:
                 test_batch = test_batch.union(test_output_gen_batch)
                 result = self.val_reward_fn(test_batch, return_dict=True)
@@ -706,8 +709,9 @@ class RayPPOTrainer:
                 scores = reward_tensor.sum(-1).cpu().tolist()
                 sample_scores.extend(scores)
                 sample_inputs.extend(input_texts)
-                displayed_inputs = sample_inputs
-                displayed_outputs = sample_outputs
+                for batch_el in test_output_gen_batch.non_tensor_batch["to_log_stats"]:
+                    displayed_inputs.append("\n".join(map(str, batch_el["trajectory_info"]["feedback_hist"])))
+                displayed_outputs.extend(self.tokenizer.batch_decode(test_output_gen_batch.batch['input_ids'], skip_special_tokens=True))
                 displayed_scores = sample_scores
 
             # modify repeat method to work nicely for the multi context and non multi context versions.
