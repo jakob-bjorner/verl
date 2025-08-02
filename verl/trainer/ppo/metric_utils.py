@@ -78,10 +78,28 @@ def _compute_response_info(batch: DataProto) -> Dict[str, Any]:
 
 def compute_combo_lock_metrics(batch: DataProto, reward_tensor: torch.Tensor):
     if "to_log_stats" in batch.non_tensor_batch:
-        to_log_stats: List[Dict[str, Any]] = batch.non_tensor_batch['to_log_stats']
-        tokens_per_assistant_message_flat = [l for to_log_stat in to_log_stats for l in to_log_stat["tokens_per_assistant_message"]]
         mean = lambda l: (0 if len(l) == 0 else sum(l) / len(l))
-        average_tokens_per_assistant_message = mean(tokens_per_assistant_message_flat)
+        to_log_stats: List[Dict[str, Any]] = batch.non_tensor_batch['to_log_stats']
+        get_list_from_log_stats = lambda list_dicts, key : [l for dict_i in list_dicts for l in dict_i[key]]
+        # get_avg_list_of_lists_value = lambda list_dicts, key : mean([l for dict_i in list_dicts for l in dict_i[key]])
+        # tokens_per_assistant_message_flat = [l for to_log_stat in to_log_stats for l in to_log_stat["tokens_per_assistant_message"]]
+        
+        # average_tokens_per_action_message = get_avg_list_of_lists_value(to_log_stats, "tokens_per_action_message")
+        # average_prompt_tokens_per_belief_message = get_avg_list_of_lists_value(to_log_stats, "prompt_tokens_per_belief_message")
+        # average_prompt_tokens_per_action_message = get_avg_list_of_lists_value(to_log_stats, "prompt_tokens_per_action_message")
+        # average_tokens_per_belief_generation_message = get_avg_list_of_lists_value(to_log_stats, "tokens_per_belief_generation_message")
+        average_tokens_per_belief_state_message = mean(get_list_from_log_stats(to_log_stats, "tokens_per_belief_state_message"))
+
+        prompt_tokens_per_belief_message = get_list_from_log_stats(to_log_stats, "prompt_tokens_per_belief_message")
+        tokens_per_belief_generation_message = get_list_from_log_stats(to_log_stats, "tokens_per_belief_generation_message")
+        prompt_tokens_per_action_message = get_list_from_log_stats(to_log_stats, "prompt_tokens_per_action_message")
+        tokens_per_action_message = get_list_from_log_stats(to_log_stats, "tokens_per_action_message")
+        if len(tokens_per_action_message) == 0:
+            tokens_per_action_completion_combined = 0
+            tokens_per_action_prompt_combined = 0
+        else:
+            tokens_per_action_completion_combined = (sum(tokens_per_belief_generation_message) + sum(tokens_per_action_message)) / len(tokens_per_action_message)
+            tokens_per_action_prompt_combined = (sum(prompt_tokens_per_belief_message) + sum(prompt_tokens_per_action_message)) / len(prompt_tokens_per_action_message)
         attempts = [to_log_stat['run_attempts'] for to_log_stat in to_log_stats]
         successes = [to_log_stat['run_success'] for to_log_stat in to_log_stats]
         completions = [to_log_stat['run_completion'] for to_log_stat in to_log_stats]
@@ -98,14 +116,24 @@ def compute_combo_lock_metrics(batch: DataProto, reward_tensor: torch.Tensor):
         # assume first that the type of to_log_stats is a 
         sequence_score = reward_tensor.sum(-1)
 
-        avg_repeated_on_success = mean(list(to_log_stat["trajectory_efficiency_info"]["repeated_guesses"] for to_log_stat in to_log_stats if to_log_stat['run_success']))
+        avg_repeated_on_success = mean(list(to_log_stat["trajectory_info"]["repeated_guesses"] for to_log_stat in to_log_stats if to_log_stat['run_success']))
+        avg_invalid_format_errors = mean(list(to_log_stat["trajectory_info"]['invalid_format_errors'] for to_log_stat in to_log_stats))
+        avg_belief_gen_failures = mean(list(to_log_stat['belief_gen_failures'] for to_log_stat in to_log_stats))
         return {
                     "critic/avg_repeated_on_success": avg_repeated_on_success,
-                    "critic/tokens_per_assistant": average_tokens_per_assistant_message,
+                    "critic/tokens_per_action_completion": mean(tokens_per_action_message),
+                    "critic/tokens_per_belief_prompt": mean(prompt_tokens_per_belief_message),
+                    "critic/tokens_per_action_prompt": mean(prompt_tokens_per_action_message),
+                    "critic/tokens_per_belief_gen_completion": mean(tokens_per_belief_generation_message),
+                    "critic/tokens_per_belief_state": average_tokens_per_belief_state_message,
+                    "critic/tokens_per_action_completion_combined": tokens_per_action_completion_combined,
+                    "critic/tokens_per_action_prompt_combined": tokens_per_action_prompt_combined,
                     "critic/fraction_incomplete": fraction_incomplete,
                     "critic/fraction_successful": fraction_successful,
                     "critic/average_attempts": average_attempts,
                     "critic/average_attempts_when_successful": average_attempts_when_successful,
+                    "critic/average_invalid_format_errors": avg_invalid_format_errors,
+                    "critic/average_belief_gen_failures": avg_belief_gen_failures,
                     "critic/score/mean": torch.mean(sequence_score).detach().item(),
                 }
     else:

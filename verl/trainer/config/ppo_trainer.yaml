@@ -148,6 +148,8 @@ actor_rollout_ref:
 
   # actor configs
   actor:
+    #jakob for access in dp actor
+    multi_context: ${actor_rollout_ref.rollout.multi_turn.multi_context}
 
     # fsdp, fsdp2 or megatron. fsdp backend used here.
     strategy: fsdp

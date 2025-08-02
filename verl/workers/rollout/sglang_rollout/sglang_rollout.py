@@ -742,8 +742,14 @@ class SGLangRollout(BaseRollout):
         request_sampling_params.update(kwargs)
         # run success, completion, and # attempts
         # number of tokens in the assistant messages
-        tokens_per_assistant_message = []
+        tokens_per_action_message = []
+        prompt_tokens_per_action_message = []
+        prompt_tokens_per_belief_message = []
+        tokens_per_belief_generation_message = []
+        tokens_per_belief_state_message = []
+
         run_completion = False
+        belief_gen_failures = 0
         
         
         while current_turns < self.config.multi_turn.max_assistant_turns:
@@ -777,16 +783,33 @@ class SGLangRollout(BaseRollout):
                 # since SGLang raises an error when max_new_tokens + 1 is greater to max_model_len (the extra token accounts for the EOS token).
                 # every time before generating an action we check if belief state should be calculated.
                 # this will have to call handle engine call for belief generation,
-                if _req.should_generate_belief(): 
+                if _req.should_generate_belief():
                     _req.pre_generate_belief_call(self.tokenizer)
-                    if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
-                        finish_reason_type = FinishReasonTypeEnum.LENGTH
-                        break
-                    output = await self._handle_engine_call(_req, request_sampling_params) # belief generation.
-                    content = output["text"]
-                    _req.add_assistant_message(self.tokenizer, content)
-                    if _req.get_next_input_ids_len() >= self.config.max_model_len:
-                        finish_reason_type = FinishReasonTypeEnum.LENGTH
+                    belief_generated = False # you get as many as will fit in context?
+
+                    
+                    while not belief_generated:
+                        if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
+                            finish_reason_type = FinishReasonTypeEnum.LENGTH
+                            break
+                        output = await self._handle_engine_call(_req, request_sampling_params) # belief generation.
+
+                        content = output["text"]
+
+                        _req.add_assistant_message(self.tokenizer, content)
+                        if _req.get_next_input_ids_len() >= self.config.max_model_len:
+                            finish_reason_type = FinishReasonTypeEnum.LENGTH
+                            break
+                        if _req.is_belief_valid(content):
+                            belief_generated = True
+                            prompt_tokens_per_belief_message += [output['meta_info']['prompt_tokens']]
+                            tokens_per_belief_generation_message += [output['meta_info']['completion_tokens']] # only record the last one. we dont care redo cost, it seems to ollow directions eventually anyway.
+                            tokens_per_belief_state_message += [len(self.tokenizer.encode(_req.extract_belief(content), add_special_tokens=False))]
+                            break
+                        else:
+                            belief_gen_failures += 1
+                            _req.add_user_message(self.tokenizer, _req.get_belief_generation_failure_msg())
+                    if not belief_generated:
                         break
                     # it is possible to have a belief state call which requires tools, we will not support this for now. 
                     # and store the belief in one context with gradient info, (belief generation context)
@@ -797,7 +820,8 @@ class SGLangRollout(BaseRollout):
                     break
                 output = await self._handle_engine_call(_req, request_sampling_params) # action
                 # print('output', output) # this for seeing if I can compute the number of generated tokens easily.
-                tokens_per_assistant_message.append(output['meta_info']['completion_tokens']) # this is characters right now, but want to make it tokens eventually.
+                prompt_tokens_per_action_message += [output['meta_info']['prompt_tokens']]
+                tokens_per_action_message += [output['meta_info']['completion_tokens']] # this is characters right now, but want to make it tokens eventually.
                 content = output["text"]
                 finish_reason_type = FinishReasonTypeEnum.from_str(output["meta_info"]["finish_reason"]["type"])
                 _req.increment_turn()
@@ -889,8 +913,16 @@ class SGLangRollout(BaseRollout):
             all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
         # all rewards other than this don't matter anyway for combo lock environment, with GRPO especially. Outcome rewards are it.
         # this is very specific to combo lock with the defined rewards of anything above zero meaning that the correct thing was eventually guessed.
-        _req.to_log_stats = {"trajectory_efficiency_info": self.interaction.get_trajectory_info(_req.request_id), "tokens_per_assistant_message": tokens_per_assistant_message, "run_success": all_rewards['interaction_reward'][0] > 0, "run_attempts": self.interaction.get_attempts(_req.request_id), "run_completion": run_completion}
-
+        _req.to_log_stats = {"trajectory_info": self.interaction.get_trajectory_info(_req.request_id), 
+                             "prompt_tokens_per_belief_message": prompt_tokens_per_belief_message,
+                             "prompt_tokens_per_action_message": prompt_tokens_per_action_message,
+                             "tokens_per_action_message": tokens_per_action_message, 
+                             "tokens_per_belief_generation_message": tokens_per_belief_generation_message,
+                             "tokens_per_belief_state_message": tokens_per_belief_state_message,
+                             "run_success": all_rewards['interaction_reward'][0] > 0, 
+                             "run_attempts": self.interaction.get_attempts(_req.request_id), 
+                             "run_completion": run_completion,
+                             "belief_gen_failures": belief_gen_failures}
         _req.finalize(self.tokenizer, all_rewards, finish_reason_type)
 
         return _req
@@ -971,7 +1003,6 @@ class SGLangRollout(BaseRollout):
         context_indices = []
         to_log_stats = []
 
-        # breakpoint() # checking tensor dims.
         # the code is messy, but eventually we plan to remove the AsyncRolloutRequest and replace with AsyncRolloutRequestMultiContext with single context.
         new_sorted_output_req_list = []
         if self.config.multi_turn.multi_context:
@@ -1075,7 +1106,6 @@ class SGLangRollout(BaseRollout):
         position_ids = torch.cat((prompt_position_ids, response_position_ids), dim=-1)
         loss_mask = torch.cat((prompt_loss_mask, response_loss_mask), dim=-1)
         
-        # breakpoint() # if finishes for len the belief might have caused the next generation's prompt to be too long, and gone undetected. check for this.
         batch = TensorDict(
             {
                 "prompts": prompt_ids,

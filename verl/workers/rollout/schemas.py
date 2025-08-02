@@ -138,6 +138,12 @@ class AsyncRolloutRequestInterface(ABC):
     @abstractmethod
     def get_last_msgs(self) -> list[Message]:
         ...
+    def is_belief_valid(self, content) -> bool:
+        return False
+    def get_belief_generation_failure_msg(self) -> str:
+        return "Belief generation failed to parse. Try again."
+    def extract_belief(self, content) -> str:
+        raise NotImplemented
     #does nothing by default.
     def pre_generate_belief_call(self, tokenizer):
         ...
@@ -465,29 +471,56 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
     def _get_agent_first_message(self):
         return self.messages[0][0].content # take the first message to be the environment instruction.
     
+    def is_belief_valid(self, content):
+        return ("<belief>" in content) and ("</belief>" in content.split("<belief>")[1])
+    
+    def get_belief_generation_failure_msg(self) -> str:
+        return "Belief generation failed to parse. The belief must be contained within <belief> ... </belief> tags. Try again."
+    
     def _get_belief_context_messages(self):
         agent_first_message = self._get_agent_first_message()
-        no_prior_belief_exists = bool(self.turn == 1)
+        no_prior_belief_exists = bool(self.turn <= 1)
         if no_prior_belief_exists:
             belief_state: str = "<belief> No prior belief. </belief>"
         else:
             belief_state: str = self.messages[-2][-1].content
-        if "<belief>" in belief_state:
-            belief_state = belief_state.split("<belief>")[1]
-        if "</belief>" in belief_state:
-            belief_state = belief_state.split("</belief>")[0]
-        belief_state = belief_state.strip()
         
+        belief_state = self.extract_belief(belief_state)
+
         agent_action = self.messages[-1][-2].content.lower()
         if "<action>" in agent_action and "</action>" in agent_action:
             agent_action = agent_action.split("<action>")[1].split("</action>")[0].strip()
         else:
             agent_action = "invalid action"
-        env_response = self.messages[-1][-1].content
-        # we take the last action for now. 
-        # if we want to support multiple actions between belief updates can that do later. 
-        # also consider making belief generation after the feedback in the same message chain instead of in seperate prompt.
-        return [Message(role="user", content=f"{agent_first_message}\nYour current belief state: <belief>{belief_state}</belief>\nYour last action:\n<action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nNow update your belief state to include all important new information you have gathered.\nDo not say anything about future actions. Think step by step and then output your new belief state inside <belief> ... </belief>, e.g., <think>Any short and concise thinking</think><belief>your new beliefs</belief>.\n")]
+        env_response = self.messages[-1][-1].content.strip()
+        return [Message(role="user", content=f"{agent_first_message}\nYour current belief state: <belief>{belief_state}</belief>\nYour last action:\n<action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nNow update your belief state to include all important new information you have gathered.\nDo not say anything about future actions. Think step by step and then output your new belief state inside <belief> ... </belief>, e.g., <think>Any thinking</think><belief>your new beliefs</belief>.\n")]
+    
+    def pre_generate_belief_call(self, tokenizer):
+        self._add_new_context(self._get_belief_context_messages(), tokenizer)
+        # if belief state being generated, change prompt we use to general belief prompt. 
+        # this might be good spot to put all logic of handling belief gen prompt.
+
+    def extract_belief(self, content):
+        belief_state = content
+        if "<belief>" in belief_state:
+            belief_state = belief_state.split("<belief>")[1]
+        if "</belief>" in belief_state:
+            belief_state = belief_state.split("</belief>")[0]
+        return belief_state.strip()
+    
+    def _get_action_context_messages(self) -> list[Message]:
+        agent_first_message = self._get_agent_first_message()
+        # take content generated from belief state message
+        belief_state = self.messages[-1][-1].content
+        belief_state = self.extract_belief(belief_state)
+        return [Message(role="user", content=f"Global Instruction: {agent_first_message}\nCurrent belief: <belief>{belief_state}</belief>\nNow think step by step and then output your next action formatted as a list of 3 characters inside <action> ... </action>, e.g.,<think>Any step by step, short and concise thinking to determine your next action</think><action>['char 1', 'char 2', 'char 3']</action>.\n")]
+        # return [Message(role="user", content=f'{env_instructions}\nYour current belief is:<belief>{belief_state}</belief>\n Now make your next query in the format:\n Assistant: <think> ... </think><action> ... </action>.\n Assistant: <think>')]
+
+    def post_generate_belief_call(self, tokenizer):
+        # case where belief has just been generated.
+        self._add_new_context(self._get_action_context_messages(), tokenizer)
+
+    
     def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer) -> list[int]:
         if self.force_thinking:
             thought_prompt_ids = tokenizer.encode(self.force_thinking)
@@ -519,21 +552,6 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1][-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
         content_ids = tokenizer.encode(content_str[self.base_conv_wo_gen_prompt_end_pos:], add_special_tokens=False)
         self._update_input_ids(content_ids, attention_mask=True, loss_mask=False, index=-1)
-
-    def _get_action_context_messages(self) -> list[Message]:
-        agent_first_message = self._get_agent_first_message()
-        # take content generated from belief state message
-        belief_state = self.messages[-1][-1].content
-        if "<belief>" in belief_state:
-            belief_state = belief_state.split("<belief>")[1]
-        if "</belief>" in belief_state:
-            belief_state = belief_state.split("</belief>")[0]
-        return [Message(role="user", content=f"Global Instruction: {agent_first_message}\nCurrent belief: <belief>{belief_state}</belief>\nNow think step by step and then output your next action formatted as a list of 3 characters inside <action> ... </action>, e.g.,<think>Any step by step, short and concise thinking to determine your next action</think><action>['char 1', 'char 2', 'char 3']</action>.\n")]
-        # return [Message(role="user", content=f'{env_instructions}\nYour current belief is:<belief>{belief_state}</belief>\n Now make your next query in the format:\n Assistant: <think> ... </think><action> ... </action>.\n Assistant: <think>')]
-
-    def post_generate_belief_call(self, tokenizer):
-        # case where belief has just been generated.
-        self._add_new_context(self._get_action_context_messages(), tokenizer)
 
     def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content: str, tool_calls: Optional[List[OpenAIFunctionToolCall]] = None) -> None:
         self.messages[-1].append(Message(role="assistant", content=content, tool_calls=tool_calls))
