@@ -17,16 +17,16 @@ from llm_exploration.inference import (
     OpenRouterInferenceEngine,
     # VLLMInferenceEngine,
     # HuggingFaceLLMInferenceEngine,
-    # WordleInferenceEngine,
-    # WordleModifiedInferenceEngine,
-    # CellularAutomationInferenceEngine,
+    WordleInferenceEngine,
+    WordleModifiedInferenceEngine,
+    CellularAutomationInferenceEngine,
     # JerichoInferenceEngine,
-    # BanditInferenceEngine,
-    # BanditBAIFixedBudgetInferenceEngine,
-    # MinesweeperInferenceEngine,
-    # MinesweeperJudgeInferenceEngine,
-    # MastermindInferenceEngine,
-    # BattleshipInferenceEngine,
+    BanditInferenceEngine,
+    BanditBAIFixedBudgetInferenceEngine,
+    MinesweeperInferenceEngine,
+    MinesweeperJudgeInferenceEngine,
+    MastermindInferenceEngine,
+    BattleshipInferenceEngine,
 )
 
 from .base import BaseInteraction
@@ -178,6 +178,19 @@ class PaprikaInteraction(BaseInteraction):
     def _load_inference_engine(self, config: dict):
         """Load OpenRouter inference engine based on config"""
         model_name = config.get("model_name", "gpt-4")
+        if config.get("model_type") == "wordle":
+            return WordleInferenceEngine(mode=config.get("mode"))
+        if config.get("model_type") == "CellularAutomationInferenceEngine":
+            return CellularAutomationInferenceEngine(mode=config.get("mode"))
+        if config.get("model_type") == "battleship":
+            return BattleshipInferenceEngine()
+        if config.get("model_type") == "mastermind":
+            return MastermindInferenceEngine(mode=config.get("mode"))
+        if config.get("model_type") == "minesweeper" and config.get("mode") == "judge":
+            return MinesweeperJudgeInferenceEngine()
+        if config.get("model_type") == "minesweeper" and config.get("mode") == "env":
+            return MinesweeperInferenceEngine()
+        
         return OpenRouterInferenceEngine(model_name=model_name)
 
     async def generate_response(
