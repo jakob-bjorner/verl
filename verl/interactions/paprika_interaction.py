@@ -56,7 +56,8 @@ class PaprikaInteraction(BaseInteraction):
         agent_config: dict, 
         env_config: dict, 
         judge_config: dict, 
-        belief_config: dict, 
+        belief_config: dict,
+        scenario_id: int = None,
         **kwargs) -> str:
         if instance_id is None:
             instance_id = str(uuid4())
@@ -77,7 +78,10 @@ class PaprikaInteraction(BaseInteraction):
         game_scenarios = game_environment.get_game_scenarios(config={"data_type": "eval", "data_subtype": None})
         self.scenario = None
         if len(game_scenarios):
-            self.scenario = random.choice(game_scenarios)
+            if scenario_id:
+                self.scenario = game_scenarios[scenario_id]
+            else:
+                self.scenario = random.choice(game_scenarios)
 
         situation_config = {
             "env_input": self.scenario["env"],
@@ -284,31 +288,6 @@ class PaprikaInteraction(BaseInteraction):
             judge_max_n_tokens=self.judge_max_n_tokens,
         )
 
-        # Extra verification if the environment thinks the game is solved
-        if agent_has_reached_goal and self.judge_prompt_agent is not None:
-            self.judge_label, self.judge_messages = await self.game_simulator.run_judge_verification(
-                judge_prompt=self.judge_prompt_agent,
-                verifier_input_generator=self.verifier_input_generator,
-                agent_messages=self.agent_conv.to_openai_api_messages(),
-                agent_game_scenario=self.agent_game_scenario,
-                env_game_scenario=self.env_game_scenario,
-                judge_temperature=self.judge_temperature,
-                judge_top_p=self.judge_top_p,
-                judge_min_p=self.judge_min_p,
-                judge_max_n_tokens=self.judge_max_n_tokens,
-            )
-
-            # Even if it is not actually solved, we terminate the game here,
-            # Since the agent things it is solved,
-            # but change the label goal_reached -> not goal reached
-            return True, env_response, 0.0, {}
-
-        elif (
-            not env_response_dict["got_valid_llm_generation"]
-            and self.terminate_at_first_agent_failure
-        ):
-            return False, "Failed to generate valid game response", 0.0, {}
-
         # NOTE: we use number of turns (lower the better) to choose
         # preferred trajectories. For environment that has fixed turns but
         # environment specified reward, we should use the negative reward
@@ -337,6 +316,31 @@ class PaprikaInteraction(BaseInteraction):
                 # conv.to_openai_api_messages() for conv in self.belief_actions_convs
             ],
         }
+
+        # Extra verification if the environment thinks the game is solved
+        if agent_has_reached_goal and self.judge_prompt_agent is not None:
+            self.judge_label, self.judge_messages = await self.game_simulator.run_judge_verification(
+                judge_prompt=self.judge_prompt_agent,
+                verifier_input_generator=self.verifier_input_generator,
+                agent_messages=self.agent_conv.to_openai_api_messages(),
+                agent_game_scenario=self.agent_game_scenario,
+                env_game_scenario=self.env_game_scenario,
+                judge_temperature=self.judge_temperature,
+                judge_top_p=self.judge_top_p,
+                judge_min_p=self.judge_min_p,
+                judge_max_n_tokens=self.judge_max_n_tokens,
+            )
+
+            # Even if it is not actually solved, we terminate the game here,
+            # Since the agent things it is solved,
+            # but change the label goal_reached -> not goal reached
+            return True, env_response, 0.0, record
+
+        elif (
+            not env_response_dict["got_valid_llm_generation"]
+            and self.terminate_at_first_agent_failure
+        ):
+            return False, "Failed to generate valid game response", 0.0, record
         
         return True, env_response, num_turns, record
 
