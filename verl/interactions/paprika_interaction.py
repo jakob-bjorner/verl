@@ -180,7 +180,7 @@ class PaprikaInteraction(BaseInteraction):
         model_name = config.get("model_name", "gpt-4")
         if config.get("model_type") == "wordle":
             return WordleInferenceEngine(mode=config.get("mode"))
-        if config.get("model_type") == "CellularAutomationInferenceEngine":
+        if config.get("model_type") == "cellular_automata":
             return CellularAutomationInferenceEngine(mode=config.get("mode"))
         if config.get("model_type") == "battleship":
             return BattleshipInferenceEngine()
