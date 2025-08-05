@@ -369,21 +369,28 @@ class DataParallelPPOActor(BasePPOActor):
             non_tensor_select_keys = ["multi_modal_inputs"]
             dataloader = data.select(select_keys, non_tensor_select_keys).chunk(num_mini_batches)
         else:
-            num_mini_batches = int(ceildiv(data.batch.batch_size[0], self.config.ppo_mini_batch_size)) # 110 / 16 => 6.875 about 7, => 7 batches
-            if dist.is_initialized() and self.config.multi_context:
-                num_mini_batches = torch.tensor([num_mini_batches], device=get_device_name())
-                dist.all_reduce(num_mini_batches, op=dist.ReduceOp.MAX, group=None)
-                num_mini_batches = int(num_mini_batches.cpu().item())
-            split_ids = np.array_split(list(range(batch.batch_size[0])), num_mini_batches)
-            dataloader = [batch[s] for s in split_ids]
+            # if i want the mini batch to be all the datapoints, I just have to document the size of the number of batches, and use that...
+            if self.config.single_mini_batch:
+                dataloader = [batch]
+                print("single bsz")
+            else:
+                num_mini_batches = int(ceildiv(data.batch.batch_size[0], self.config.ppo_mini_batch_size))
+                if dist.is_initialized() and self.config.multi_context:
+                    num_mini_batches = torch.tensor([num_mini_batches], device=get_device_name())
+                    dist.all_reduce(num_mini_batches, op=dist.ReduceOp.MAX, group=None)
+                    num_mini_batches = int(num_mini_batches.cpu().item())
+                split_ids = np.array_split(list(range(batch.batch_size[0])), num_mini_batches)
+                dataloader = [batch[s] for s in split_ids]
 
 
         metrics = {}
 
         for epoch in range(self.config.ppo_epochs):
-            for batch_idx, data in enumerate(dataloader): # technically possible for this loop to happen a different number of times in each dp group.
+            for batch_idx, data in enumerate(dataloader): 
                 # split batch into micro_batches
                 mini_batch = data
+                print("running bch")
+                local_mini_batch_size = len(mini_batch)
                 if has_multi_modal_inputs:
                     micro_batches = []
                     if self.config.use_dynamic_bsz:
@@ -399,17 +406,17 @@ class DataParallelPPOActor(BasePPOActor):
                             mb_dict["multi_modal_inputs"] = current_mm_inputs_list
                             micro_batches.append(mb_dict)
                     else:
-                        self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
+                        self.gradient_accumulation = local_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
                         num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
                         micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
                 elif self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
                     micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
                 else:
-                    self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
+                    self.gradient_accumulation = local_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
                     # split batch into micro_batches
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
-
+                print([len(m) for m in micro_batches])
                 self.actor_optimizer.zero_grad()
 
                 num_micro_batches = len(micro_batches)
@@ -492,7 +499,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                         if self.config.use_dynamic_bsz:
                             # relative to the dynamic bsz
-                            loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
+                            loss = policy_loss * (len(data) / local_mini_batch_size)
                         else:
                             loss = policy_loss / self.gradient_accumulation
                         loss.backward()

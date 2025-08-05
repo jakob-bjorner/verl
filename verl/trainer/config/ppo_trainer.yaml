@@ -150,6 +150,7 @@ actor_rollout_ref:
   actor:
     #jakob for access in dp actor
     multi_context: ${actor_rollout_ref.rollout.multi_turn.multi_context}
+    single_mini_batch: false
 
     # fsdp, fsdp2 or megatron. fsdp backend used here.
     strategy: fsdp

@@ -46,6 +46,7 @@ else
         MODEL_NAME=Qwen/Qwen${QWEN}-${B}B
     fi
 fi
+SINGLE_MINI_BATCH=${SINGLE_MINI_BATCH:-False}
 
 # DEBUG=miss GPUS=2 MICRO_BATCH_SIZE=4 CUDA_VISIBLE_DEVICES="2,3" B=3 MINI_BATCH_SIZE=512 N_ROLLOUT=8 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
@@ -63,11 +64,15 @@ fi
 # added dset for debug base_one_val
 # with dynamic bsz micro bsz doesn't do anything.
 # DEBUG=q2_5_14b_mt_belief_base DSET=interaction_base INSTRUCT=False B=14 GPUS=8 MICRO_BATCH_SIZE=4 N_ROLLOUT=2 TP=4 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=q2_5_14b_mc_belief_base DSET=interaction_base_base INSTRUCT=False B=14 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=q2_5_14b_sc_belief_base DSET=interaction_base_base INSTRUCT=False B=14 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=False DYNAMIC_BSZ=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_RESP_LEN=3584 MAX_PROMPT_LEN=512 MAX_LEN_CTX=4096 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_14b_mc_belief_base_bsz_64s SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=14 GPUS=4 N_ROLLOUT=4 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_14b_sc_belief_base_bsz_64s SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=14 GPUS=4 N_ROLLOUT=4 TP=1 MULTI_CONTEXT=False DYNAMIC_BSZ=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_RESP_LEN=3584 MAX_PROMPT_LEN=512 MAX_LEN_CTX=4096 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # added use_dynamic_bsz if multi context
 # added balance_batch False if multi context to avoid 
 # I changed 0.7 mem to 0.5 just when switching to 7 B instead of 3 B model.
+# launch many eval runs with different datasets on the different checkpoints enabling eval only (turn on sampling?)
+# - pass at 16 comparison? 
+# scaling test time comparison ... 
+# DEBUG=test_single_minib_q2_5_3b_mc_belief_base RAY_DEDUP_LOGS=0 CUDA_VISIBLE_DEVICES="5" SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=3 GPUS=1 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -94,6 +99,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.fsdp_config.param_offload=$OFFLOAD \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=$OFFLOAD \
+    actor_rollout_ref.actor.single_mini_batch=$SINGLE_MINI_BATCH \
     +actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$TP \

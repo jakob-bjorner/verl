@@ -784,7 +784,10 @@ class SGLangRollout(BaseRollout):
                 # every time before generating an action we check if belief state should be calculated.
                 # this will have to call handle engine call for belief generation,
                 if _req.should_generate_belief():
-                    _req.pre_generate_belief_call(self.tokenizer)
+                    successful_context_gen = _req.pre_generate_belief_call(self.tokenizer)
+                    if not successful_context_gen: # doesn't create a new context
+                        finish_reason_type = FinishReasonTypeEnum.LENGTH
+                        break
                     belief_generated = False # you get as many as will fit in context?
 
                     
@@ -814,7 +817,10 @@ class SGLangRollout(BaseRollout):
                     # it is possible to have a belief state call which requires tools, we will not support this for now. 
                     # and store the belief in one context with gradient info, (belief generation context)
                     # and then separately in another context without gradient info (action context)
-                    _req.post_generate_belief_call(self.tokenizer)
+                    successful_context_gen = _req.post_generate_belief_call(self.tokenizer)
+                    if not successful_context_gen: # doesn't create a new context
+                        finish_reason_type = FinishReasonTypeEnum.LENGTH
+                        break
                 if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
                     finish_reason_type = FinishReasonTypeEnum.LENGTH
                     break

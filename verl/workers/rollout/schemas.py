@@ -145,9 +145,9 @@ class AsyncRolloutRequestInterface(ABC):
     def extract_belief(self, content) -> str:
         raise NotImplemented
     #does nothing by default.
-    def pre_generate_belief_call(self, tokenizer):
+    def pre_generate_belief_call(self, tokenizer) -> bool:
         ...
-    def post_generate_belief_call(self, tokenizer):
+    def post_generate_belief_call(self, tokenizer) -> bool:
         ...
 
 class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
@@ -494,9 +494,19 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
             agent_action = "invalid action"
         env_response = self.messages[-1][-1].content.strip()
         return [Message(role="user", content=f"{agent_first_message}\nYour current belief state: <belief>{belief_state}</belief>\nYour last action:\n<action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nNow update your belief state to include all important new information you have gathered.\nDo not say anything about future actions. Think step by step and then output your new belief state inside <belief> ... </belief>, e.g., <think>Any thinking</think><belief>your new beliefs</belief>.\n")]
-    
+    def _check_overlong_context(self, new_context_messages, tokenizer):
+        tool_schemas = self.tool_schemas if self.tool_schemas else []
+        tools = [tool.model_dump() for tool in tool_schemas] if tool_schemas else None
+        input_ids = tokenizer.apply_chat_template(new_context_messages, tools=[tool.model_dump() for tool in tool_schemas], add_generation_prompt=True, tokenize=True, return_dict=True)['input_ids']
+        return len(input_ids) > self.max_model_len
+        
+
     def pre_generate_belief_call(self, tokenizer):
-        self._add_new_context(self._get_belief_context_messages(), tokenizer)
+        new_context_messages = self._get_belief_context_messages()
+        if self._check_overlong_context(new_context_messages, tokenizer):
+            return False
+        self._add_new_context(new_context_messages, tokenizer)
+        return True
         # if belief state being generated, change prompt we use to general belief prompt. 
         # this might be good spot to put all logic of handling belief gen prompt.
 
@@ -518,7 +528,12 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
 
     def post_generate_belief_call(self, tokenizer):
         # case where belief has just been generated.
-        self._add_new_context(self._get_action_context_messages(), tokenizer)
+        new_context_messages = self._get_action_context_messages()
+        if self._check_overlong_context(new_context_messages, tokenizer):
+            return False
+        self._add_new_context(new_context_messages, tokenizer)
+        return True
+
 
     
     def get_generation_prompt_ids(self, tokenizer: PreTrainedTokenizer) -> list[int]:
