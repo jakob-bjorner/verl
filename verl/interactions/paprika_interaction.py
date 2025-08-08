@@ -75,13 +75,13 @@ class PaprikaInteraction(BaseInteraction):
         game_simulator = GameSimulator(agent=agent, env=env, judge=judge)
         self.game_simulator = game_simulator
 
-        game_scenarios = game_environment.get_game_scenarios(config={"data_type": "eval", "data_subtype": None})
+        self.game_scenarios = game_environment.get_game_scenarios(config={"data_type": "eval", "data_subtype": None})
         self.scenario = None
-        if len(game_scenarios):
+        if len(self.game_scenarios):
             if scenario_id:
-                self.scenario = game_scenarios[scenario_id]
+                self.scenario = self.game_scenarios[scenario_id]
             else:
-                self.scenario = random.choice(game_scenarios)
+                self.scenario = random.choice(self.game_scenarios)
 
         situation_config = {
             "env_input": self.scenario["env"],
