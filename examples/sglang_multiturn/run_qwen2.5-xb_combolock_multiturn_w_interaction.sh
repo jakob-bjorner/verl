@@ -47,6 +47,7 @@ else
     fi
 fi
 SINGLE_MINI_BATCH=${SINGLE_MINI_BATCH:-False}
+LR=${LR:-1e-6}
 
 # DEBUG=miss GPUS=2 MICRO_BATCH_SIZE=4 CUDA_VISIBLE_DEVICES="2,3" B=3 MINI_BATCH_SIZE=512 N_ROLLOUT=8 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
@@ -64,7 +65,7 @@ SINGLE_MINI_BATCH=${SINGLE_MINI_BATCH:-False}
 # added dset for debug base_one_val
 # with dynamic bsz micro bsz doesn't do anything.
 # DEBUG=q2_5_14b_mt_belief_base DSET=interaction_base INSTRUCT=False B=14 GPUS=8 MICRO_BATCH_SIZE=4 N_ROLLOUT=2 TP=4 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
-# DEBUG=q2_5_14b_mc_belief_base_bsz_64s SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=14 GPUS=4 N_ROLLOUT=4 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_14b_mc_belief_base_bsz_64s_lr10x LR=1e-5 SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=14 GPUS=4 N_ROLLOUT=4 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q2_5_14b_sc_belief_base_bsz_64s SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=14 GPUS=4 N_ROLLOUT=4 TP=1 MULTI_CONTEXT=False DYNAMIC_BSZ=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_RESP_LEN=3584 MAX_PROMPT_LEN=512 MAX_LEN_CTX=4096 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # added use_dynamic_bsz if multi context
 # added balance_batch False if multi context to avoid 
@@ -72,7 +73,7 @@ SINGLE_MINI_BATCH=${SINGLE_MINI_BATCH:-False}
 # launch many eval runs with different datasets on the different checkpoints enabling eval only (turn on sampling?)
 # - pass at 16 comparison? 
 # scaling test time comparison ... 
-# DEBUG=test_single_minib_q2_5_3b_mc_belief_base RAY_DEDUP_LOGS=0 CUDA_VISIBLE_DEVICES="5" SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=3 GPUS=1 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=test_single_minib_q2_5_3b_mc_belief_base RAY_DEDUP_LOGS=0 CUDA_VISIBLE_DEVICES="2,4" SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=False B=3 GPUS=2 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 MAX_TOK=2048 MAX_LEN_CTX=1024 EPOCHS=5 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -89,7 +90,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     +actor_rollout_ref.model.enable_activation_offloading=True \
-    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.optim.lr=$LR \
     actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOK \
