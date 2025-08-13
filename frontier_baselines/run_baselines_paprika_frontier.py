@@ -21,6 +21,8 @@ sys.path.append('../../src/optimal_explorer')
 from llm_utils import llm_call
 from pprint import pprint as pp
 
+PORT = 38873
+
 async def update_belief(
         global_info: str,
         curr_belief: str,
@@ -48,11 +50,17 @@ Understand that only the generated belief is fed to the agent to pick the next a
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
@@ -96,11 +104,17 @@ Please format your response as: <Think> Any step-by-step, short and concise thin
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
@@ -138,11 +152,17 @@ Please format your response as: <Think> Any step-by-step, short and concise thin
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
@@ -180,11 +200,17 @@ Please format your response as: <Think> Any step-by-step, short and concise thin
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
