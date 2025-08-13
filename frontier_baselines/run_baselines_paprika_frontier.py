@@ -21,7 +21,7 @@ sys.path.append('../../src/optimal_explorer')
 from llm_utils import llm_call
 from pprint import pprint as pp
 
-PORT = 38873
+PORT = 36358
 
 async def update_belief(
         global_info: str,
