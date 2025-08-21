@@ -83,6 +83,8 @@ class AsyncRolloutRequestInterface(ABC):
     use_inference_chat_template: bool
     force_thinking: str
     enable_tokenization_sanity_check: bool
+    belief_state_construction_style: str
+    lax_format_belief: bool
 
     base_conv_wo_gen_prompt_end_pos: int
     base_conv_with_gen_prompt_end_pos: int
@@ -105,6 +107,7 @@ class AsyncRolloutRequestInterface(ABC):
         tokenizer: PreTrainedTokenizer,
         content: str,
         tool_calls: Optional[List[OpenAIFunctionToolCall]] = None,
+        loss_mask: bool = True,
     ) -> None:
         ...
     @abstractmethod
@@ -149,6 +152,8 @@ class AsyncRolloutRequestInterface(ABC):
         ...
     def post_generate_belief_call(self, tokenizer) -> bool:
         ...
+    def should_engine_call_belief_generation(self) -> bool:
+        raise NotImplemented
 
 class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
     """The data model for async rollout."""
@@ -277,11 +282,12 @@ class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
         tokenizer: PreTrainedTokenizer,
         content: str,
         tool_calls: Optional[List[OpenAIFunctionToolCall]] = None,
+        loss_mask: bool = True,
     ) -> None:
         self.messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
         content = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
         content_ids = tokenizer.encode(content[self.base_conv_with_gen_prompt_end_pos :], add_special_tokens=False)
-        self._update_input_ids(content_ids, attention_mask=True, loss_mask=True)
+        self._update_input_ids(content_ids, attention_mask=True, loss_mask=loss_mask)
 
     def add_tool_response_messages(self, tokenizer: PreTrainedTokenizer, contents: list[str]) -> None:
         if not contents:
@@ -360,6 +366,7 @@ class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
         return self.messages[-1]
     def get_last_msgs(self) -> list[Message]:
         return self.messages
+
 
 class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
     """The data model for async rollout for multi-context training runs."""
@@ -472,7 +479,10 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         return self.messages[0][0].content # take the first message to be the environment instruction.
     
     def is_belief_valid(self, content):
-        return ("<belief>" in content) and ("</belief>" in content.split("<belief>")[1])
+        if self.lax_format_belief:
+            return ("<beliefs>" in content) or ("<beliefs>" in content)
+        else:
+            return ("<belief>" in content) and ("</belief>" in content.split("<belief>")[1])
     
     def get_belief_generation_failure_msg(self) -> str:
         return "Belief generation failed to parse. The belief must be contained within <belief> ... </belief> tags. Try again."
@@ -512,10 +522,16 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
 
     def extract_belief(self, content):
         belief_state = content
+
         if "<belief>" in belief_state:
             belief_state = belief_state.split("<belief>")[1]
         if "</belief>" in belief_state:
             belief_state = belief_state.split("</belief>")[0]
+        if self.lax_format_belief:
+            if "<beliefs>" in belief_state:
+                belief_state = belief_state.split("<beliefs>")[1]
+            if "</beliefs>" in belief_state:
+                belief_state = belief_state.split("</beliefs>")[0]
         return belief_state.strip()
     
     def _get_action_context_messages(self) -> list[Message]:
@@ -568,11 +584,11 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         content_ids = tokenizer.encode(content_str[self.base_conv_wo_gen_prompt_end_pos:], add_special_tokens=False)
         self._update_input_ids(content_ids, attention_mask=True, loss_mask=False, index=-1)
 
-    def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content: str, tool_calls: Optional[List[OpenAIFunctionToolCall]] = None) -> None:
+    def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content: str, tool_calls: Optional[List[OpenAIFunctionToolCall]] = None, loss_mask=True) -> None:
         self.messages[-1].append(Message(role="assistant", content=content, tool_calls=tool_calls))
         content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1][-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
         content_ids = tokenizer.encode(content_str[self.base_conv_with_gen_prompt_end_pos:], add_special_tokens=False)
-        self._update_input_ids(content_ids, attention_mask=True, loss_mask=True, index=-1)
+        self._update_input_ids(content_ids, attention_mask=True, loss_mask=loss_mask, index=-1)
         
     def add_tool_response_messages(self, tokenizer: PreTrainedTokenizer, contents: list[str]) -> None:
         if not contents:
@@ -638,3 +654,11 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
     
     def get_last_msgs(self) -> list[Message]:
         return self.messages[-1]
+    
+    def should_engine_call_belief_generation(self) -> bool:
+        if self.belief_state_construction_style == "generative":
+            return True
+        elif self.belief_state_construction_style == "manual_belief":
+            return False
+        else:
+            raise Exception(f"invalid {self.belief_state_construction_style=}")

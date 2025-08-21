@@ -59,6 +59,7 @@ from verl.utils.metric import (
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+from copy import deepcopy
 
 WorkerType = Type[Worker]
 
@@ -662,7 +663,7 @@ class RayPPOTrainer:
 
             # unpad
             # test_output_gen_batch = test_output_gen_batch_padded # why pad????
-            if self.config.actor_rollout_ref.rollout.multi_turn.multi_context:
+            if self.config.actor_rollout_ref.rollout.multi_turn.multi_context.enable:
                 request_ids = test_output_gen_batch_padded.non_tensor_batch['request_ids'].tolist()
                 context_counts = Counter(request_ids)
                 if pad_size:
@@ -680,7 +681,7 @@ class RayPPOTrainer:
             sample_outputs.extend(output_texts)
 
             print((f"{test_output_gen_batch.batch.batch_size=}, {test_batch.batch.batch_size=}"))
-            if self.config.actor_rollout_ref.rollout.multi_turn.multi_context: # test_output_gen_batch.batch.batch_size != test_batch.batch.batch_size:
+            if self.config.actor_rollout_ref.rollout.multi_turn.multi_context.enable: # test_output_gen_batch.batch.batch_size != test_batch.batch.batch_size:
                 #TODO:this is gross. also fix the display scores
                 # as of python 3.7 Counter will always be correctly ordered according to insertion
                 request_ids = test_output_gen_batch.non_tensor_batch['request_ids'].tolist()
@@ -1011,9 +1012,17 @@ class RayPPOTrainer:
                 timing_raw = {}
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
+                # jakob: moved this up to use for join on data after generation when variable number of contexts can come from a single prompt.
+                # jakob: adding special case if our dataset is _single.
+                if self.config.data.train_files.endswith('_single/train.parquet'):
+                    uid = str(uuid.uuid4())
+                    batch.non_tensor_batch["uid"] = np.array([uid for _ in range(len(batch.batch))], dtype=object)
+                else:
+                    batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
+
                 # pop those keys for generation
                 batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
-                non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
+                non_tensor_batch_keys_to_pop = ["raw_prompt_ids", "uid"]
                 if "multi_modal_data" in batch.non_tensor_batch:
                     non_tensor_batch_keys_to_pop.append("multi_modal_data")
                 if "raw_prompt" in batch.non_tensor_batch:
@@ -1026,10 +1035,14 @@ class RayPPOTrainer:
                     batch_keys=batch_keys_to_pop,
                     non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
                 )
+                # jakob: uids before the generation for identifiability. 
+                # Not in use. Can revert change actually lol
+                batch.non_tensor_batch['uid'] = deepcopy(gen_batch.non_tensor_batch['uid'])
 
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
                     # generate a batch
+
                     with marked_timer("gen", timing_raw, color="red"):
                         if not self.async_rollout_mode:
                             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
@@ -1055,13 +1068,13 @@ class RayPPOTrainer:
 
                             del gen_baseline_batch, gen_baseline_output
 
-                    batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
+                    # batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     if gen_batch_output.batch.batch_size != batch.batch.batch_size:
                         # as of 3.7 Counter will always be correctly ordered according to insertion
                         repeat_times = list(Counter(gen_batch_output.non_tensor_batch['request_ids'].tolist()).values())
-                        # sample_inputs.extend(np.repeat(input_texts, repeat_times, axis=0))
+                        # can use select_idxs([]). Actually, this doesn't make sense to use when we know that the order is preserved, which is an assumption made in the original verl with the above repeat.
                         batch = batch.sample_level_repeat(repeat_times)
                     # else:
                     #     sample_inputs.extend(input_texts)
@@ -1085,7 +1098,6 @@ class RayPPOTrainer:
                         if self.use_rm:
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
-                        # breakpoint() # check grpo is working with multi context. if so launch with higher lr...
                         if self.config.reward_model.launch_reward_fn_async:
                             future_reward = compute_reward_async.remote(batch, self.config, self.tokenizer)
                         else:

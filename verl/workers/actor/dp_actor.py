@@ -350,32 +350,32 @@ class DataParallelPPOActor(BasePPOActor):
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
         self.actor_module.train()
+        data_og = data
 
-        temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
-        multi_turn = data.meta_info.get("multi_turn", False)
+        temperature = data_og.meta_info["temperature"]  # temperature must be in the data_og.meta_info to avoid silent error
+        multi_turn = data_og.meta_info.get("multi_turn", False)
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn:
             select_keys.append("loss_mask")
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
-        batch = data.select(batch_keys=select_keys).batch
-        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
+        batch = data_og.select(batch_keys=select_keys).batch
+        has_multi_modal_inputs = "multi_modal_inputs" in data_og.non_tensor_batch.keys()
 
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         if has_multi_modal_inputs:
-            num_mini_batches = data.batch.batch_size[0] // self.config.ppo_mini_batch_size
+            num_mini_batches = data_og.batch.batch_size[0] // self.config.ppo_mini_batch_size
             non_tensor_select_keys = ["multi_modal_inputs"]
-            dataloader = data.select(select_keys, non_tensor_select_keys).chunk(num_mini_batches)
+            dataloader = data_og.select(select_keys, non_tensor_select_keys).chunk(num_mini_batches)
         else:
             # if i want the mini batch to be all the datapoints, I just have to document the size of the number of batches, and use that...
             if self.config.single_mini_batch:
                 dataloader = [batch]
-                print("single bsz")
             else:
-                num_mini_batches = int(ceildiv(data.batch.batch_size[0], self.config.ppo_mini_batch_size))
-                if dist.is_initialized() and self.config.multi_context:
+                num_mini_batches = int(ceildiv(data_og.batch.batch_size[0], self.config.ppo_mini_batch_size))
+                if dist.is_initialized() and self.config.multi_context.enable:
                     num_mini_batches = torch.tensor([num_mini_batches], device=get_device_name())
                     dist.all_reduce(num_mini_batches, op=dist.ReduceOp.MAX, group=None)
                     num_mini_batches = int(num_mini_batches.cpu().item())
@@ -384,12 +384,11 @@ class DataParallelPPOActor(BasePPOActor):
 
 
         metrics = {}
-        # breakpoint() # atten mask check...
+        # breakpoint() # # check for correct chat template
         for epoch in range(self.config.ppo_epochs):
             for batch_idx, data in enumerate(dataloader): 
                 # split batch into micro_batches
                 mini_batch = data
-                print("running bch")
                 local_mini_batch_size = len(mini_batch)
                 if has_multi_modal_inputs:
                     micro_batches = []
@@ -416,7 +415,9 @@ class DataParallelPPOActor(BasePPOActor):
                     self.gradient_accumulation = local_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
                     # split batch into micro_batches
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
-                print([len(m) for m in micro_batches])
+                # print([len(m) for m in micro_batches])
+                import pickle
+                pickle.dump((data_og, micro_batches), open(f"temp_rank_{torch.distributed.get_rank()}_index_{data_og.non_tensor_batch['index'][0]}.pkl", 'wb'))
                 self.actor_optimizer.zero_grad()
 
                 num_micro_batches = len(micro_batches)
