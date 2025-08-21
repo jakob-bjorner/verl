@@ -2,6 +2,7 @@ import sys
 import pandas as pd
 import json
 import re
+import re
 sys.path.append('../../paprika/') # Remove this when verl and paprika are installed in the same env
 
 from llm_exploration.paprika_config_helper import PaprikaConfigHelper
@@ -20,6 +21,8 @@ import asyncio
 sys.path.append('../../src/optimal_explorer')
 from llm_utils import llm_call
 from pprint import pprint as pp
+
+PORT = 37044
 
 async def update_belief(
         global_info: str,
@@ -48,11 +51,17 @@ Understand that only the generated belief is fed to the agent to pick the next a
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
@@ -80,6 +89,10 @@ async def take_action_both(
         curr_attempt,
         total_attempts,
     ):
+    if 'instruct' in model_name.lower():
+        think_format = '<Think> Any step-by-step, short and concise thinking to determine what the next guess should be </Think>\n'
+    else:
+        think_format = ''
     user_content = f'''\
 This is the game information:
 {global_info}
@@ -89,18 +102,24 @@ Give an answer that leads to optimal exploration and do not be greedy unless it 
 History so far:
 {history_str}
 Belief: {belief}
-Please format your response as: <Think> Any step-by-step, short and concise thinking to determine what the next guess should be </Think>\n <Answer> your answer in the correct format mentioned </Answer>'''
+Please format your response as: {think_format}<Answer> your answer in the correct format mentioned </Answer>'''
 
     messages = [
         {"role": "system", "content": 'You are a helpful assistant.'},
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
@@ -123,6 +142,10 @@ async def take_action_history(
         curr_attempt,
         total_attempts,
     ):
+    if 'instruct' in model_name.lower():
+        think_format = '<Think> Any step-by-step, short and concise thinking to determine what the next guess should be </Think>\n'
+    else:
+        think_format = ''
     user_content = f'''\
 This is the game information:
 {global_info}
@@ -131,18 +154,24 @@ Look at the current history and give an answer based on it.\
 Give an answer that leads to optimal exploration and do not be greedy unless it is the last attempt. Try to maximize the amount of information you have so that you can solve the task correctly.\
 History so far:
 {history}
-Please format your response as: <Think> Any step-by-step, short and concise thinking to determine what the next guess should be </Think>\n <Answer> your answer in the correct format mentioned </Answer>'''
+Please format your response as: {think_format}<Answer> your answer in the correct format mentioned </Answer>'''
 
     messages = [
         {"role": "system", "content": 'You are a helpful assistant.'},
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
@@ -166,6 +195,10 @@ async def take_action_belief(
         curr_attempt,
         total_attempts,
     ):
+    if 'instruct' in model_name.lower():
+        think_format = '<Think> Any step-by-step, short and concise thinking to determine what the next guess should be </Think>\n'
+    else:
+        think_format = ''
     user_content = f'''\
 This is the game information:
 {global_info}
@@ -173,18 +206,24 @@ You are currently taking your attempt {curr_attempt + 1}, and you have a total o
 Look at the current belief state and give an answer based on it.\
 Give an answer that leads to optimal exploration and do not be greedy unless it is the last attempt. Try to maximize the amount of information you have so that you can solve the task correctly.\
 Belief: {belief}
-Please format your response as: <Think> Any step-by-step, short and concise thinking to determine what the next guess should be </Think>\n <Answer> your answer in the correct format mentioned </Answer>'''
+Please format your response as: {think_format}<Answer> your answer in the correct format mentioned </Answer>'''
 
     messages = [
         {"role": "system", "content": 'You are a helpful assistant.'},
         {"role": "user", "content": user_content},
     ]
 
+    if 'qwen' in model_name.lower():
+        url = f"http://localhost:{PORT}/v1/chat/completions"
+    else:
+        url = None
+
     out = await llm_call(
         model=model_name,
         get_everything=True,
         reasoning_effort='high',
-        messages=messages
+        messages=messages,
+        url=url
     )
 
     content = out['choices'][0]['message']['content']
@@ -221,6 +260,10 @@ async def run_one_iteration_llm(
         builtins.print = _original_print
 
     first_user_message = interaction.agent_conv.messages[0][1]
+    
+    if 'instruct' not in model_name.lower():
+        pattern = r"(?is)<Think[^>]*>(.*?)</Think>"
+        first_user_message = re.sub(pattern, '', first_user_message)
     attempts = 0
     game_history = []
     belief = f'This is the start of the game. No beliefs right now.'
