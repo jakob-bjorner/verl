@@ -79,7 +79,8 @@ def _compute_response_info(batch: DataProto) -> Dict[str, Any]:
 def compute_combo_lock_metrics(batch: DataProto, reward_tensor: torch.Tensor):
     if "to_log_stats" in batch.non_tensor_batch:
         mean = lambda l: (0 if len(l) == 0 else sum(l) / len(l))
-        to_log_stats: List[Dict[str, Any]] = batch.non_tensor_batch['to_log_stats']
+        request_id_to_index_of_last_context = {j: i for i, j in enumerate(batch.non_tensor_batch['request_ids'])}
+        to_log_stats: List[Dict[str, Any]] = [batch.non_tensor_batch['to_log_stats'][i] for i in request_id_to_index_of_last_context.values()]
         get_list_from_log_stats = lambda list_dicts, key : [l for dict_i in list_dicts for l in dict_i[key]]
         # get_avg_list_of_lists_value = lambda list_dicts, key : mean([l for dict_i in list_dicts for l in dict_i[key]])
         # tokens_per_assistant_message_flat = [l for to_log_stat in to_log_stats for l in to_log_stat["tokens_per_assistant_message"]]
@@ -114,7 +115,8 @@ def compute_combo_lock_metrics(batch: DataProto, reward_tensor: torch.Tensor):
         # "run_attempts": self.interaction.get_attempts(_req.request_id), 
         # "run_completion": run_completion}
         # assume first that the type of to_log_stats is a 
-        sequence_score = reward_tensor.sum(-1)
+        # sequence_score = reward_tensor.sum(-1) # to fix this for sequence based updates, I need to account for the 
+        mean_trajectory_score = reward_tensor[list(request_id_to_index_of_last_context.values())].sum(-1).mean().detach().item()
 
         avg_repeated_on_success = mean(list(to_log_stat["trajectory_info"]["repeated_guesses"] for to_log_stat in to_log_stats if to_log_stat['run_success']))
         avg_invalid_format_errors = mean(list(to_log_stat["trajectory_info"]['invalid_format_errors'] for to_log_stat in to_log_stats))
@@ -134,7 +136,7 @@ def compute_combo_lock_metrics(batch: DataProto, reward_tensor: torch.Tensor):
                     "critic/average_attempts_when_successful": average_attempts_when_successful,
                     "critic/average_invalid_format_errors": avg_invalid_format_errors,
                     "critic/average_belief_gen_failures": avg_belief_gen_failures,
-                    "critic/score/mean": torch.mean(sequence_score).detach().item(),
+                    "critic/score/mean": mean_trajectory_score, # torch.mean(sequence_score).detach().item(),
                 }
     else:
         return {}

@@ -788,18 +788,26 @@ class SGLangRollout(BaseRollout):
                     if not successful_context_gen: # doesn't create a new context
                         finish_reason_type = FinishReasonTypeEnum.LENGTH
                         break
-                    belief_generated = False # you get as many as will fit in context?
-
+                    belief_generated = False # you get as many as will fit in context
                     
                     while not belief_generated:
                         if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
                             finish_reason_type = FinishReasonTypeEnum.LENGTH
                             break
-                        output = await self._handle_engine_call(_req, request_sampling_params) # belief generation.
+                        if _req.should_engine_call_belief_generation():
+                            output = await self._handle_engine_call(_req, request_sampling_params) # belief generation.
+                            content = output["text"]
+                            _req.add_assistant_message(self.tokenizer, content)
+                        else:
+                            content = "<belief>" + self.interaction.get_mdp(_req.request_id).generate_posterior_str() + "</belief>"
+                            output = {"text": content,
+                                      # this will refer to the tokens used for a forward pass when generating the belief state, which here shouldn't be anything
+                                      "meta_info": {"prompt_tokens": 0,
+                                                    "completion_tokens": 0},
+                                      }
+                            # changed this so that no policy gradient is executed on these tokens, because the model didn't generate these.
+                            _req.add_assistant_message(self.tokenizer, content, loss_mask=False) 
 
-                        content = output["text"]
-
-                        _req.add_assistant_message(self.tokenizer, content)
                         if _req.get_next_input_ids_len() >= self.config.max_model_len:
                             finish_reason_type = FinishReasonTypeEnum.LENGTH
                             break
@@ -914,8 +922,13 @@ class SGLangRollout(BaseRollout):
         tool_reward_scores = await asyncio.gather(*tool_reward_tasks)
         tool_reward_scores = dict(tool_reward_scores)
         if self.interaction is not None:
-            all_rewards = {"interaction_reward": [await self.interaction.calculate_score(_req.request_id)]} 
+            mdp_reward = await self.interaction.calculate_score(_req.request_id)
+
+            all_rewards = {"interaction_reward": [(mdp_reward - self.interaction.get_format_penalty_coef(_req.request_id) * (belief_gen_failures + self.interaction.get_trajectory_info(_req.request_id)['invalid_format_errors']))]} 
+            run_success_flag = mdp_reward > 0
+            # breakpoint()
         else:
+            run_success_flag = 0.42 # this isn't properly defined, so make a weird number in case I see it.
             all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
         # all rewards other than this don't matter anyway for combo lock environment, with GRPO especially. Outcome rewards are it.
         # this is very specific to combo lock with the defined rewards of anything above zero meaning that the correct thing was eventually guessed.
@@ -925,7 +938,7 @@ class SGLangRollout(BaseRollout):
                              "tokens_per_action_message": tokens_per_action_message, 
                              "tokens_per_belief_generation_message": tokens_per_belief_generation_message,
                              "tokens_per_belief_state_message": tokens_per_belief_state_message,
-                             "run_success": all_rewards['interaction_reward'][0] > 0, 
+                             "run_success": run_success_flag, 
                              "run_attempts": self.interaction.get_attempts(_req.request_id), 
                              "run_completion": run_completion,
                              "belief_gen_failures": belief_gen_failures}
@@ -955,7 +968,7 @@ class SGLangRollout(BaseRollout):
                 tool_creation_coroutines.append(tool.create(_req.request_id, **create_kwargs))
             await asyncio.gather(*tool_creation_coroutines)
         if _req.interaction_kwargs:
-            interaction_kwargs = _req.interaction_kwargs
+            interaction_kwargs = _req.interaction_kwargs | {"lax_format": self.config.multi_turn.lax_format, "format_penalty_coef": self.config.multi_turn.format_penalty_coef}
             await self.interaction.start_interaction(_req.request_id, **interaction_kwargs)
 
     @GPUMemoryLogger(role="sglang rollout", logger=logger)
@@ -1011,7 +1024,7 @@ class SGLangRollout(BaseRollout):
 
         # the code is messy, but eventually we plan to remove the AsyncRolloutRequest and replace with AsyncRolloutRequestMultiContext with single context.
         new_sorted_output_req_list = []
-        if self.config.multi_turn.multi_context:
+        if self.config.multi_turn.multi_context.enable:
             for req in sorted_output_req_list:
                 for idx in range(len(req.input_ids)): # number of contexts
                     new_sorted_output_req_list.append(SimpleNamespace(**dict(
@@ -1162,7 +1175,7 @@ class SGLangRollout(BaseRollout):
                 else:
                     _interaction_kwargs = {}
                 
-                if self.config.multi_turn.multi_context:
+                if self.config.multi_turn.multi_context.enable:
                     req = AsyncRolloutRequestMultiContext(
                         batch_data_id=data_idx,
                         rollout_offset=rollout_offset,
@@ -1186,6 +1199,8 @@ class SGLangRollout(BaseRollout):
                         use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
                         force_thinking=self.config.multi_turn.force_thinking,
                         enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
+                        belief_state_construction_style=self.config.multi_turn.multi_context.belief_state_construction_style,
+                        lax_format_belief=self.config.multi_turn.lax_format,
                         tokenizer=self.tokenizer,
                     )
 
@@ -1213,6 +1228,8 @@ class SGLangRollout(BaseRollout):
                         use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
                         force_thinking=self.config.multi_turn.force_thinking,
                         enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
+                        belief_state_construction_style=self.config.multi_turn.multi_context.belief_state_construction_style,
+                        lax_format_belief=self.config.multi_turn.lax_format,
                         tokenizer=self.tokenizer,
                     )
 

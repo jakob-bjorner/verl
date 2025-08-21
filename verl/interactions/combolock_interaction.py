@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 def process_guess_msg(msg_str, vocab, combination_length):
-    remove_list = ["**", "</Answer>", "</answer>", "<Answer>", "<answer>", "</Ans>", "</ans>", "<Ans>", "<ans>","<Action>","</Action>","<action>","</action>"]
+    remove_list = ["**", "</Answer>", "</answer>", "<Answer>", "<answer>", "</Ans>", "</ans>", "<Ans>", "<ans>","<Action>","</Action>","<action>","</action>",'[action]','[/action]','[answer]','[/answer]']
     def rem_list_from_str(s: str):
         if s.endswith("**"):
             s = s[:-2]
@@ -53,23 +53,28 @@ class ComboLockInteraction(BaseInteraction):
         super().__init__(config)
         self._instance_dict = {}
 
-    async def start_interaction(self, instance_id: Optional[str], combination_length: int, max_attempts: int, vocab: str, ground_truth: Tuple[str], format: str, **kwargs) -> str:
+    async def start_interaction(self, instance_id: Optional[str], combination_length: int, max_attempts: int, vocab: str, ground_truth: Tuple[str], format: str, format_penalty_coef: float, lax_format: bool, **kwargs) -> str:
         if instance_id is None:
             instance_id = str(uuid4())
+        self.lax_format = lax_format
         env = CombinationLock(combination_length, max_attempts, vocab)
         env.reset()
         env.target_combination = "".join(map(str, ground_truth))
         self._instance_dict[instance_id] = {"env": env, "format": format, "invalid_format_errors": 0}
-        
+        self.format_penalty_coef = format_penalty_coef
         return instance_id
 
     async def generate_response(self, instance_id: str, messages: List[Dict[str, Any]], **kwargs) -> Tuple[bool, str, float, dict]:
         mdp = self._instance_dict[instance_id]['env']
         content = messages[-1]['content'] # I assume the last message given will be the assistant waiting for a user response?
-        contents, valid, error_msg = process_msg_content(content, tag_list=['action'])
-        if not valid:
-            self._instance_dict[instance_id]["invalid_format_errors"] += 1
-            return False, error_msg, 0.0, {}
+        contents = [content]
+        # jakob: temp comment out to try generous version of parsing.
+        if not self.lax_format:
+            contents, valid, error_msg = process_msg_content(content, tag_list=['action'])
+            if not valid:
+                self._instance_dict[instance_id]["invalid_format_errors"] += 1
+                return False, error_msg, 0.0, {}
+        
         guess = process_guess_msg(contents[0], mdp.vocab, mdp.combination_length)
         if not mdp._is_valid_guess(guess):
             # mdp.current_attempt += 1 # we don't increment the current attempt just so we don't confound our attempts when successful number. Only penalize incorrect attempts through length.
@@ -115,11 +120,17 @@ class ComboLockInteraction(BaseInteraction):
     def get_trajectory_info(self, instance_id: str) -> dict:
         return self._instance_dict[instance_id]['env'].get_trajectory_info() | {"invalid_format_errors": self._instance_dict[instance_id]["invalid_format_errors"]}
     
+    def get_mdp(self, instance_id: str):
+        return self._instance_dict[instance_id]['env']
+    def get_format_penalty_coefficient(self, instance_id: str):
+        return self._instance_dict[instance_id]['env']
     async def calculate_score(self, instance_id: str, **kwargs) -> float:
         # this is used in  sglang_rollout.py, and we ignore the step level reward to account for early terminating sequences.
-        return self._instance_dict[instance_id]['env'].get_trajectory_score() 
+        return self._instance_dict[instance_id]['env'].get_trajectory_score()
         # the user per interaction score is used instead.
         # return 0.0
+    def get_format_penalty_coef(self, instance_id: str):
+        return self.format_penalty_coef / self._instance_dict[instance_id]['env'].max_attempts
 
     async def finalize_interaction(self, instance_id: str, **kwargs) -> None:
         del self._instance_dict[instance_id]
