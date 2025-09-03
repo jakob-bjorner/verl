@@ -264,7 +264,7 @@ async def run_one_iteration_llm(
     if 'instruct' not in model_name.lower():
         pattern = r"(?is)<Think[^>]*>(.*?)</Think>"
         first_user_message = re.sub(pattern, '', first_user_message)
-    attempts = 0
+    attempts = -1
     game_history = []
     belief = f'This is the start of the game. No beliefs right now.'
     max_attempts = interaction._instance_dict[instance_id]['max_turns']
