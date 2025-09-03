@@ -25,6 +25,7 @@ from json import JSONDecodeError
 from typing import List, Optional, Tuple
 from uuid import uuid4
 from types import SimpleNamespace
+from functools import partial
 
 import numpy as np
 import sglang.srt.entrypoints.engine
@@ -383,10 +384,11 @@ class SGLangRollout(BaseRollout):
     def _init_sampling_params(self, **kwargs):
         kwargs = dict(
             n=1,
-            max_new_tokens=self.config.response_length,
+            max_new_tokens=self.config.max_new_tokens,
             presence_penalty=0.0,
             frequency_penalty=0.0,
             repetition_penalty=1.0,
+            skip_special_tokens=False, # keep tokenization consistent btwn txt and ids
         )
         # supporting adding any sampling params from the config file
         for k in self.config.keys():
@@ -750,6 +752,7 @@ class SGLangRollout(BaseRollout):
 
         run_completion = False
         belief_gen_failures = 0
+        lm_generate_calls = 0
         
         
         while current_turns < self.config.multi_turn.max_assistant_turns:
@@ -784,20 +787,21 @@ class SGLangRollout(BaseRollout):
                 # every time before generating an action we check if belief state should be calculated.
                 # this will have to call handle engine call for belief generation,
                 if _req.should_generate_belief():
-                    successful_context_gen = _req.pre_generate_belief_call(self.tokenizer)
+                    successful_context_gen = _req.pre_generate_belief_call(self.tokenizer, partial(self.interaction.is_valid_format_checker, instance_id=_req.request_id))
                     if not successful_context_gen: # doesn't create a new context
                         finish_reason_type = FinishReasonTypeEnum.LENGTH
                         break
                     belief_generated = False # you get as many as will fit in context
-                    
                     while not belief_generated:
                         if len(_req.get_generation_prompt_ids(self.tokenizer)) + 1 >= self.config.max_model_len:
                             finish_reason_type = FinishReasonTypeEnum.LENGTH
                             break
                         if _req.should_engine_call_belief_generation():
                             output = await self._handle_engine_call(_req, request_sampling_params) # belief generation.
+                            lm_generate_calls += 1
                             content = output["text"]
-                            _req.add_assistant_message(self.tokenizer, content)
+                            output_ids = [t[1] for t in output['meta_info']['output_token_logprobs']]
+                            _req.add_assistant_message(self.tokenizer, content, output_ids)
                         else:
                             content = "<belief>" + self.interaction.get_mdp(_req.request_id).generate_posterior_str() + "</belief>"
                             output = {"text": content,
@@ -805,10 +809,14 @@ class SGLangRollout(BaseRollout):
                                       "meta_info": {"prompt_tokens": 0,
                                                     "completion_tokens": 0},
                                       }
+                            output_ids = self.tokenizer.encode(content)
                             # changed this so that no policy gradient is executed on these tokens, because the model didn't generate these.
-                            _req.add_assistant_message(self.tokenizer, content, loss_mask=False) 
+                            _req.add_assistant_message(self.tokenizer, content, output_ids, loss_mask=False) 
 
-                        if _req.get_next_input_ids_len() >= self.config.max_model_len:
+                        if 151644 in output_ids: # big issue with generation should terminate and -1 this trajectory.
+                            finish_reason_type = FinishReasonTypeEnum.STOP # don't know if I want to count these failures yet, but they def need to be stopped.
+                            break
+                        if _req.get_next_input_ids_len() >= self.config.max_model_len or lm_generate_calls >= self.interaction.get_mdp(_req.request_id).max_attempts * 2:
                             finish_reason_type = FinishReasonTypeEnum.LENGTH
                             break
                         if _req.is_belief_valid(content):
@@ -819,6 +827,9 @@ class SGLangRollout(BaseRollout):
                             break
                         else:
                             belief_gen_failures += 1
+                            if belief_gen_failures > 4:
+                                finish_reason_type = FinishReasonTypeEnum.STOP
+                                break
                             _req.add_user_message(self.tokenizer, _req.get_belief_generation_failure_msg())
                     if not belief_generated:
                         break
@@ -833,18 +844,25 @@ class SGLangRollout(BaseRollout):
                     finish_reason_type = FinishReasonTypeEnum.LENGTH
                     break
                 output = await self._handle_engine_call(_req, request_sampling_params) # action
+                lm_generate_calls += 1
                 # print('output', output) # this for seeing if I can compute the number of generated tokens easily.
                 prompt_tokens_per_action_message += [output['meta_info']['prompt_tokens']]
                 tokens_per_action_message += [output['meta_info']['completion_tokens']] # this is characters right now, but want to make it tokens eventually.
                 content = output["text"]
+                output_ids = [t[1] for t in output['meta_info']['output_token_logprobs']]
                 finish_reason_type = FinishReasonTypeEnum.from_str(output["meta_info"]["finish_reason"]["type"])
                 _req.increment_turn()
                 current_turns += 1
+                if 151644 in output_ids or lm_generate_calls >= self.interaction.get_mdp(_req.request_id).max_attempts * 2:
+                    _req.add_assistant_message(self.tokenizer, content, output_ids)
+                    finish_reason_type = FinishReasonTypeEnum.STOP
+                    break
                 if finish_reason_type == FinishReasonTypeEnum.LENGTH:
-                    _req.add_assistant_message(self.tokenizer, content)
+                    _req.add_assistant_message(self.tokenizer, content, output_ids)
                     break
                 else:
                     if self._function_call_parser and self._function_call_parser.has_tool_call(content):
+                        assert False, "Tools no longer supported fix the add assistant message function to reintroduce tool support. -jakob"
                         finish_reason_type = FinishReasonTypeEnum.TOOL_CALL
                         _req.state = AsyncRolloutRequestStateEnum.TOOL_CALLING
                         try:
@@ -883,6 +901,7 @@ class SGLangRollout(BaseRollout):
                         _req.add_assistant_message(
                             self.tokenizer,
                             content,
+                            output_ids,
                         )
                         if _req.interaction_kwargs and user_turns < self.config.multi_turn.max_user_turns and current_turns < self.config.multi_turn.max_assistant_turns:
                             _req.state = AsyncRolloutRequestStateEnum.INTERACTING
@@ -926,7 +945,6 @@ class SGLangRollout(BaseRollout):
 
             all_rewards = {"interaction_reward": [(mdp_reward - self.interaction.get_format_penalty_coef(_req.request_id) * (belief_gen_failures + self.interaction.get_trajectory_info(_req.request_id)['invalid_format_errors']))]} 
             run_success_flag = mdp_reward > 0
-            # breakpoint()
         else:
             run_success_flag = 0.42 # this isn't properly defined, so make a weird number in case I see it.
             all_rewards = {**tool_reward_scores, **{"user_turn_rewards": user_turn_rewards}}
@@ -941,21 +959,22 @@ class SGLangRollout(BaseRollout):
                              "run_success": run_success_flag, 
                              "run_attempts": self.interaction.get_attempts(_req.request_id), 
                              "run_completion": run_completion,
-                             "belief_gen_failures": belief_gen_failures}
+                             "belief_gen_failures": belief_gen_failures,
+                             "lm_generate_calls": lm_generate_calls}
         _req.finalize(self.tokenizer, all_rewards, finish_reason_type)
 
         return _req
 
     async def _handle_engine_call(self, _req: AsyncRolloutRequestInterface, sampling_params: dict) -> dict:
         generation_prompt_ids = _req.get_generation_prompt_ids(self.tokenizer)
-        max_new_tokens = min(self.config.response_length, self.config.max_model_len - len(generation_prompt_ids) - 1)
+        max_new_tokens = min(self.config.max_new_tokens, self.config.response_length, self.config.max_model_len - len(generation_prompt_ids) - 1)
         kwargs = sampling_params.copy()
         kwargs["max_new_tokens"] = max_new_tokens
         kwargs["n"] = 1  # group size is supported in preprocess
         output = await self._engine.async_generate(
             input_ids=generation_prompt_ids,
             sampling_params=kwargs,
-            return_logprob=False,
+            return_logprob=True,
         )
         return output
 
@@ -1142,7 +1161,7 @@ class SGLangRollout(BaseRollout):
             loop = asyncio.get_event_loop()
             loop.run_until_complete(self._engine.flush_cache())
 
-        return DataProto(
+        data_proto = DataProto(
             batch=batch,
             non_tensor_batch={
                 "messages": np.array(messages),
@@ -1151,8 +1170,8 @@ class SGLangRollout(BaseRollout):
                 "context_indices": np.array(context_indices),
                 "to_log_stats": np.array(to_log_stats),
             },
-            # add item here for trajectory index?
         )
+        return data_proto
 
     def _preprocess_prompt_to_async_rollout_requests(self, prompts: DataProto, n: int) -> list[AsyncRolloutRequest]:
         assert "raw_prompt" in prompts.non_tensor_batch, "need data.return_raw_chat=True, due to no official way do parse_messages"
@@ -1200,6 +1219,7 @@ class SGLangRollout(BaseRollout):
                         force_thinking=self.config.multi_turn.force_thinking,
                         enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
                         belief_state_construction_style=self.config.multi_turn.multi_context.belief_state_construction_style,
+                        single_context_belief_generation=self.config.multi_turn.multi_context.single_context_belief_generation,
                         lax_format_belief=self.config.multi_turn.lax_format,
                         tokenizer=self.tokenizer,
                     )
@@ -1230,6 +1250,7 @@ class SGLangRollout(BaseRollout):
                         enable_tokenization_sanity_check=self.config.multi_turn.enable_tokenization_sanity_check,
                         belief_state_construction_style=self.config.multi_turn.multi_context.belief_state_construction_style,
                         lax_format_belief=self.config.multi_turn.lax_format,
+                        single_context_belief_generation=self.config.multi_turn.multi_context.single_context_belief_generation,
                         tokenizer=self.tokenizer,
                     )
 

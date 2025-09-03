@@ -64,11 +64,22 @@ class ComboLockInteraction(BaseInteraction):
         self.format_penalty_coef = format_penalty_coef
         return instance_id
 
+    def is_valid_format_checker(self, content: str, instance_id: str) -> bool: # this function to be used by some internal class of the schemas
+        if not self.lax_format:
+            contents, valid, error_msg = process_msg_content(content, tag_list=['action'])
+            if not valid:
+                return False
+        mdp = self._instance_dict[instance_id]['env']
+        guess = process_guess_msg(content.split('<action>')[1].split("</action>")[0], mdp.vocab, mdp.combination_length)
+        if not mdp._is_valid_guess(guess):
+            return False
+        return True
+    
+
     async def generate_response(self, instance_id: str, messages: List[Dict[str, Any]], **kwargs) -> Tuple[bool, str, float, dict]:
         mdp = self._instance_dict[instance_id]['env']
         content = messages[-1]['content'] # I assume the last message given will be the assistant waiting for a user response?
         contents = [content]
-        # jakob: temp comment out to try generous version of parsing.
         if not self.lax_format:
             contents, valid, error_msg = process_msg_content(content, tag_list=['action'])
             if not valid:
@@ -81,7 +92,7 @@ class ComboLockInteraction(BaseInteraction):
             # if mdp.current_attempt == mdp.max_attempts:
             #     # we are done.
             #     return True, "DONE", -1.0, {} # this should only happen when you run out on your last guess because it is unclear.
-            content_summary = contents[0] if len(contents[0]) < 20 else f"...{contents[0][-20:]}"
+            content_summary = content if len(content) < 20 else f"...{content[-20:]}"
             self._instance_dict[instance_id]["invalid_format_errors"] += 1
             return False, f"Could not parse valid guess from: '{content_summary}'. Please ensure the guess is contained in the final characters of your response, and using only use the characters from the vocab in your guess characters. Do not repeat characters in your guess.", 0.0, {}
         obs, reward, done, info = mdp.step(guess)

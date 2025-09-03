@@ -85,6 +85,7 @@ class AsyncRolloutRequestInterface(ABC):
     enable_tokenization_sanity_check: bool
     belief_state_construction_style: str
     lax_format_belief: bool
+    single_context_belief_generation: bool
 
     base_conv_wo_gen_prompt_end_pos: int
     base_conv_with_gen_prompt_end_pos: int
@@ -105,7 +106,8 @@ class AsyncRolloutRequestInterface(ABC):
     def add_assistant_message(
         self,
         tokenizer: PreTrainedTokenizer,
-        content: str,
+        content_str: str,
+        content_ids: list[int],
         tool_calls: Optional[List[OpenAIFunctionToolCall]] = None,
         loss_mask: bool = True,
     ) -> None:
@@ -128,9 +130,6 @@ class AsyncRolloutRequestInterface(ABC):
     def truncate_output_ids(self, tokenizer: PreTrainedTokenizer) -> None:
         ...
     @abstractmethod
-    def should_generate_belief(self) -> bool:
-        ...
-    @abstractmethod
     def get_next_input_ids_len(self) -> int:
         ...
     @abstractmethod
@@ -141,19 +140,48 @@ class AsyncRolloutRequestInterface(ABC):
     @abstractmethod
     def get_last_msgs(self) -> list[Message]:
         ...
-    def is_belief_valid(self, content) -> bool:
-        return False
     def get_belief_generation_failure_msg(self) -> str:
-        return "Belief generation failed to parse. Try again."
-    def extract_belief(self, content) -> str:
-        raise NotImplemented
+        return "Belief generation failed to parse. The belief must be contained within <belief> ... </belief> tags. Try again."
+    def should_generate_belief(self) -> bool:
+        ...
+    def is_belief_valid(self, content):
+        if self.lax_format_belief:
+            return ("<belief>" in content) or ("<beliefs>" in content)
+        else:
+            return ("<belief>" in content) and ("</belief>" in content.split("<belief>")[1])
+    
+    def extract_belief(self, content):
+        belief_state = content
+
+        if "<belief>" in belief_state:
+            belief_state = belief_state.split("<belief>")[1]
+        if "</belief>" in belief_state:
+            belief_state = belief_state.split("</belief>")[0]
+        if self.lax_format_belief:
+            if "<beliefs>" in belief_state:
+                belief_state = belief_state.split("<beliefs>")[1]
+            if "</beliefs>" in belief_state:
+                belief_state = belief_state.split("</beliefs>")[0]
+        return belief_state.strip()
     #does nothing by default.
-    def pre_generate_belief_call(self, tokenizer) -> bool:
+    def pre_generate_belief_call(self, tokenizer, is_valid_action_checker) -> bool:
         ...
     def post_generate_belief_call(self, tokenizer) -> bool:
         ...
     def should_engine_call_belief_generation(self) -> bool:
-        raise NotImplemented
+        if self.belief_state_construction_style == "generative":
+            return True
+        elif self.belief_state_construction_style == "manual_belief":
+            return False
+        else:
+            raise Exception(f"invalid {self.belief_state_construction_style=}")
+    
+    def _check_overlong_context(self, new_context_messages, tokenizer):
+        tool_schemas = self.tool_schemas if self.tool_schemas else []
+        tools = [tool.model_dump() for tool in tool_schemas] if tool_schemas else None
+        input_ids = tokenizer.apply_chat_template(new_context_messages, tools=[tool.model_dump() for tool in tool_schemas], add_generation_prompt=True, tokenize=True, return_dict=True)['input_ids']
+        return len(input_ids) > self.max_model_len
+        
 
 class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
     """The data model for async rollout."""
@@ -280,14 +308,25 @@ class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
     def add_assistant_message(
         self,
         tokenizer: PreTrainedTokenizer,
-        content: str,
+        content_str: str,
+        content_ids: list[int],
         tool_calls: Optional[List[OpenAIFunctionToolCall]] = None,
         loss_mask: bool = True,
     ) -> None:
-        self.messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
-        content = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
-        content_ids = tokenizer.encode(content[self.base_conv_with_gen_prompt_end_pos :], add_special_tokens=False)
+        content_str = content_str.replace("<|im_end|>", "")
+        self.messages.append(Message(role="assistant", content=content_str, tool_calls=tool_calls))
+        # content = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
+        # content_ids = tokenizer.encode(content[self.base_conv_with_gen_prompt_end_pos :], add_special_tokens=False)
+        # self._update_input_ids(content_ids, attention_mask=True, loss_mask=loss_mask)
+        assert tool_calls is None, "don't support tool calls any more"
+        # this is very qwen2.5 specific lol. I think I'll have to do something different if I want to test out llama, but already found with verl-agent that llama didn't work well due to accuracy poor.
+        # going to continue with this for now will have to think sometime later if I want to add experiments with llama or gemma or other family (olmo?) ? 
         self._update_input_ids(content_ids, attention_mask=True, loss_mask=loss_mask)
+        if content_ids[-1] != tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]:
+            self._update_input_ids(tokenizer.encode("<|im_end|>", add_special_tokens=False), attention_mask=True, loss_mask=False)
+
+        self._update_input_ids(tokenizer.encode("\n", add_special_tokens=False), attention_mask=True, loss_mask=False)
+
 
     def add_tool_response_messages(self, tokenizer: PreTrainedTokenizer, contents: list[str]) -> None:
         if not contents:
@@ -322,13 +361,17 @@ class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
             self.position_ids = self.position_ids[: -len(temp_generation_prompt_ids)]
             self.loss_mask = self.loss_mask[: -len(temp_generation_prompt_ids)]
         if self.enable_tokenization_sanity_check:
-            full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True)
-            if self.input_ids != full_tokens:
+            full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
+            if tokenizer.decode(self.input_ids) != full_tokens:
                 # print("AAAAAAA"*10)
                 # print(tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False))
                 # print(tokenizer.decode(self.input_ids))
+                # breakpoint()
+                print(tokenizer.decode(self.input_ids))
+                print("+"*1000)
+                print(full_tokens)
                 logger.warning("Inconsistent training and inference tokenization detected. This may lead to unexpected behavior during training. Please review your chat template to determine if this is intentional. For more information, refer to the multiturn README.md.")
-                logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids, skip_special_tokens=False)}")
+                # logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids, skip_special_tokens=False)}")
                 # breakpoint()
                 # this seems to happen because it reaches the max len. will ignore.
 
@@ -358,7 +401,14 @@ class AsyncRolloutRequest(BaseModel, AsyncRolloutRequestInterface):
         self.response_loss_mask = self.loss_mask[len(self.prompt_loss_mask) :][: self.max_response_len]
 
     def should_generate_belief(self) -> bool:
-        return False
+        return self.single_context_belief_generation and bool(self.turn != 0)
+
+    def pre_generate_belief_call(self, tokenizer, is_valid_action_checker) -> bool:
+        self.add_user_message(tokenizer, content="Now update your belief state to include all important new information you have gathered.\nDo not say anything about future actions. Think step by step and then output your new belief state inside <belief> ... </belief>, e.g., <think>Any thinking</think><belief>your new beliefs</belief>.")
+        return True # we don't need to make a new context, so we can't fail with prompt being too long.
+    def post_generate_belief_call(self, tokenizer) -> bool:
+        self.add_user_message(tokenizer, content="Now think step by step and then output your next action formatted as a list of 3 characters inside <action> ... </action>, e.g.,<think>Any step by step, short and concise thinking to determine your next action</think><action>['char 1', 'char 2', 'char 3']</action>.")
+        return True # also can't fail here
 
     def get_next_input_ids_len(self) -> int:
         return len(self.input_ids)
@@ -478,16 +528,8 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
     def _get_agent_first_message(self):
         return self.messages[0][0].content # take the first message to be the environment instruction.
     
-    def is_belief_valid(self, content):
-        if self.lax_format_belief:
-            return ("<beliefs>" in content) or ("<beliefs>" in content)
-        else:
-            return ("<belief>" in content) and ("</belief>" in content.split("<belief>")[1])
-    
-    def get_belief_generation_failure_msg(self) -> str:
-        return "Belief generation failed to parse. The belief must be contained within <belief> ... </belief> tags. Try again."
-    
-    def _get_belief_context_messages(self):
+
+    def _get_belief_context_messages(self, is_valid_action_checker):
         agent_first_message = self._get_agent_first_message()
         no_prior_belief_exists = bool(self.turn <= 1)
         if no_prior_belief_exists:
@@ -498,21 +540,18 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         belief_state = self.extract_belief(belief_state)
 
         agent_action = self.messages[-1][-2].content.lower()
-        if "<action>" in agent_action and "</action>" in agent_action:
+        if is_valid_action_checker(content=agent_action):
             agent_action = agent_action.split("<action>")[1].split("</action>")[0].strip()
         else:
             agent_action = "invalid action"
-        env_response = self.messages[-1][-1].content.strip()
-        return [Message(role="user", content=f"{agent_first_message}\nYour current belief state: <belief>{belief_state}</belief>\nYour last action:\n<action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nNow update your belief state to include all important new information you have gathered.\nDo not say anything about future actions. Think step by step and then output your new belief state inside <belief> ... </belief>, e.g., <think>Any thinking</think><belief>your new beliefs</belief>.\n")]
-    def _check_overlong_context(self, new_context_messages, tokenizer):
-        tool_schemas = self.tool_schemas if self.tool_schemas else []
-        tools = [tool.model_dump() for tool in tool_schemas] if tool_schemas else None
-        input_ids = tokenizer.apply_chat_template(new_context_messages, tools=[tool.model_dump() for tool in tool_schemas], add_generation_prompt=True, tokenize=True, return_dict=True)['input_ids']
-        return len(input_ids) > self.max_model_len
-        
 
-    def pre_generate_belief_call(self, tokenizer):
-        new_context_messages = self._get_belief_context_messages()
+        # if "<action>" in agent_action and "</action>" in agent_action:
+        env_response = self.messages[-1][-1].content.strip()
+        return [Message(role="user", content=f"{agent_first_message}\nYour current belief state: <belief>{belief_state}</belief>\nYour last action:\n<action>{agent_action}</action>\nEnvironment feedback:\n{env_response}\nNow update your belief state to include all important new information you have gathered.\nDo not say anything about future actions. Think step by step and then output your new belief state inside <belief> ... </belief>, e.g., <think>Any thinking</think><belief>your new beliefs</belief>.")]
+
+
+    def pre_generate_belief_call(self, tokenizer, is_valid_action_checker):
+        new_context_messages = self._get_belief_context_messages(is_valid_action_checker)
         if self._check_overlong_context(new_context_messages, tokenizer):
             return False
         self._add_new_context(new_context_messages, tokenizer)
@@ -520,26 +559,14 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         # if belief state being generated, change prompt we use to general belief prompt. 
         # this might be good spot to put all logic of handling belief gen prompt.
 
-    def extract_belief(self, content):
-        belief_state = content
 
-        if "<belief>" in belief_state:
-            belief_state = belief_state.split("<belief>")[1]
-        if "</belief>" in belief_state:
-            belief_state = belief_state.split("</belief>")[0]
-        if self.lax_format_belief:
-            if "<beliefs>" in belief_state:
-                belief_state = belief_state.split("<beliefs>")[1]
-            if "</beliefs>" in belief_state:
-                belief_state = belief_state.split("</beliefs>")[0]
-        return belief_state.strip()
     
     def _get_action_context_messages(self) -> list[Message]:
         agent_first_message = self._get_agent_first_message()
         # take content generated from belief state message
         belief_state = self.messages[-1][-1].content
         belief_state = self.extract_belief(belief_state)
-        return [Message(role="user", content=f"Global Instruction: {agent_first_message}\nCurrent belief: <belief>{belief_state}</belief>\nNow think step by step and then output your next action formatted as a list of 3 characters inside <action> ... </action>, e.g.,<think>Any step by step, short and concise thinking to determine your next action</think><action>['char 1', 'char 2', 'char 3']</action>.\n")]
+        return [Message(role="user", content=f"Global Instruction: {agent_first_message}\nCurrent belief: <belief>{belief_state}</belief>\nNow think step by step and then output your next action formatted as a list of 3 characters inside <action> ... </action>, e.g.,<think>Any step by step, short and concise thinking to determine your next action</think><action>['char 1', 'char 2', 'char 3']</action>.")]
         # return [Message(role="user", content=f'{env_instructions}\nYour current belief is:<belief>{belief_state}</belief>\n Now make your next query in the format:\n Assistant: <think> ... </think><action> ... </action>.\n Assistant: <think>')]
 
     def post_generate_belief_call(self, tokenizer):
@@ -584,11 +611,21 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
         content_ids = tokenizer.encode(content_str[self.base_conv_wo_gen_prompt_end_pos:], add_special_tokens=False)
         self._update_input_ids(content_ids, attention_mask=True, loss_mask=False, index=-1)
 
-    def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content: str, tool_calls: Optional[List[OpenAIFunctionToolCall]] = None, loss_mask=True) -> None:
-        self.messages[-1].append(Message(role="assistant", content=content, tool_calls=tool_calls))
-        content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1][-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
-        content_ids = tokenizer.encode(content_str[self.base_conv_with_gen_prompt_end_pos:], add_special_tokens=False)
+    def add_assistant_message(self, tokenizer: PreTrainedTokenizer, content_str: str, content_ids: list[int], tool_calls: Optional[List[OpenAIFunctionToolCall]] = None, loss_mask=True) -> None:
+        content_str = content_str.replace("<|im_end|>", "")
+        self.messages[-1].append(Message(role="assistant", content=content_str, tool_calls=tool_calls))
+        # content_str = tokenizer.apply_chat_template([*BASE_CHAT_HISTORY, self.messages[-1][-1]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
+        # content_ids = tokenizer.encode(content_str[self.base_conv_with_gen_prompt_end_pos:], add_special_tokens=False)
+        # self._update_input_ids(content_ids[:-1], attention_mask=True, loss_mask=loss_mask, index=-1)
+        # self._update_input_ids(content_ids[-1:], attention_mask=True, loss_mask=False, index=-1) # the new line was definitely not added by the assistant.
+        assert tool_calls is None, "don't support tool calls any more"
+        # this is very qwen2.5 specific lol. I think I'll have to do something different if I want to test out llama, but already found with verl-agent that llama didn't work well due to accuracy poor.
+        # going to continue with this for now will have to think sometime later if I want to add experiments with llama or gemma or other family (olmo?) ? 
         self._update_input_ids(content_ids, attention_mask=True, loss_mask=loss_mask, index=-1)
+        if content_ids[-1] != tokenizer.encode("<|im_end|>", add_special_tokens=False)[0]:
+            self._update_input_ids(tokenizer.encode("<|im_end|>", add_special_tokens=False), attention_mask=True, loss_mask=False, index=-1)
+
+        self._update_input_ids(tokenizer.encode("\n", add_special_tokens=False), attention_mask=True, loss_mask=False, index=-1)
         
     def add_tool_response_messages(self, tokenizer: PreTrainedTokenizer, contents: list[str]) -> None:
         if not contents:
@@ -617,11 +654,15 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
                 self.attention_mask[index] = self.attention_mask[index][:-len(temp_generation_prompt_ids)]
                 self.position_ids[index] = self.position_ids[index][:-len(temp_generation_prompt_ids)]
                 self.loss_mask[index] = self.loss_mask[index][:-len(temp_generation_prompt_ids)]
-            if self.enable_tokenization_sanity_check:
-                full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages[index]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=True)
-                if self.input_ids[index] != full_tokens:
+            if self.enable_tokenization_sanity_check: # TODO: jakob fix this to check the decoded version.
+                full_tokens = tokenizer.apply_chat_template([msg.model_dump() for msg in self.messages[index]], tools=([tool.model_dump() for tool in self.tool_schemas] if self.tool_schemas else None), add_generation_prompt=False, tokenize=False)
+                if tokenizer.decode(self.input_ids[index]) != full_tokens:
+                    # breakpoint()
+                    print(tokenizer.decode(self.input_ids[index]))
+                    print("+"*1000)
+                    print(full_tokens)
                     logger.warning("Inconsistent training and inference tokenization detected. This may lead to unexpected behavior during training. Please review your chat template to determine if this is intentional. For more information, refer to the multiturn README.md.")
-                    logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids[index], skip_special_tokens=False)}")
+                    # logger.info(f"Inference tokenization result:\n{tokenizer.decode(full_tokens, skip_special_tokens=False)}\ntraining content:\n{tokenizer.decode(self.input_ids[index], skip_special_tokens=False)}")
             self.response_ids[index] = self.input_ids[index][len(self.prompt_ids[index]):]
             if finish_reason_type == FinishReasonTypeEnum.STOP:
                 pass
@@ -655,10 +696,4 @@ class AsyncRolloutRequestMultiContext(BaseModel, AsyncRolloutRequestInterface):
     def get_last_msgs(self) -> list[Message]:
         return self.messages[-1]
     
-    def should_engine_call_belief_generation(self) -> bool:
-        if self.belief_state_construction_style == "generative":
-            return True
-        elif self.belief_state_construction_style == "manual_belief":
-            return False
-        else:
-            raise Exception(f"invalid {self.belief_state_construction_style=}")
+

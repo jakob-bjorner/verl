@@ -391,6 +391,7 @@ actor_rollout_ref:
     mode: sync
 
     is_instruct_model: True
+    max_new_tokens: ${.response_length}
 
     # Sampling temperature for rollout.
     temperature: 1
@@ -519,6 +520,7 @@ actor_rollout_ref:
       # flag for enabling belief state generation.
       multi_context: 
         enable: False 
+        single_context_belief_generation: False
         # jakob: either manual_belief or generative right now as of 8.12.25
         belief_state_construction_style: generative
 

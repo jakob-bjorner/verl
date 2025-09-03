@@ -24,6 +24,7 @@ QWEN=${QWEN:-2.5}
 MAX_LEN_CTX=${MAX_LEN_CTX:-$((1024 * 4))} # max_model_len is determined by this which is max context len.
 MAX_PROMPT_LEN=${MAX_PROMPT_LEN:-$MAX_LEN_CTX}
 MAX_RESP_LEN=${MAX_RESP_LEN:-$MAX_LEN_CTX}
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-$MAX_RESP_LEN}
 MAX_TOK=${MAX_TOK:-16384}
 INSTRUCT=${INSTRUCT:-True}
 MULTI_CONTEXT=${MULTI_CONTEXT:-False}
@@ -51,11 +52,17 @@ if [ $MODEL_FAM == qwen ]; then
 else
     MODEL_NAME=meta-llama/Llama-3.1-${B}B-Instruct
 fi
+MODEL_NAME_OVERRIDE=${MODEL_NAME_OVERRIDE:-$MODEL_NAME}
 SINGLE_MINI_BATCH=${SINGLE_MINI_BATCH:-False}
 LR=${LR:-1e-6}
 BELIEF_STYLE=${BELIEF_STYLE:-generative}
 FMT_PEN=${FMT_PEN:-0.0}
 LAX_FORMAT=${LAX_FORMAT:-False}
+KL_COEF=${KL_COEF:-0.001}
+SC_BELIEF=${SC_BELIEF:-False}
+TEMPERATURE=${TEMPERATURE:-1.0}
+SHUFFLE=${SHUFFLE:-False}
+SEED=${SEED:-1}
 # DEBUG=miss GPUS=2 MICRO_BATCH_SIZE=4 CUDA_VISIBLE_DEVICES="2,3" B=3 MINI_BATCH_SIZE=512 N_ROLLOUT=8 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_belief B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DSET=interaction_think B=7 N_ROLLOUT=2 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
@@ -87,6 +94,16 @@ LAX_FORMAT=${LAX_FORMAT:-False}
 # 4 512
 # DEBUG=l3_1_8b_instruct_mc_belief_base_bsz_64s FMT_PEN=0.5 MODEL_FAM=llama SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=8 GPUS=4 N_ROLLOUT=4 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=512 MAX_TOK=4096 MAX_LEN_CTX=1024 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 # DEBUG=q2_5_7b_instruct_mc_belief_base_bsz_64s_debug_step SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=4 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=64 MAX_TOK=4096 MAX_LEN_CTX=1024 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_7b_instruct_sc_belief_base_bsz_16s_512newtok_kl01_vanilla KL_COEF=0.01 SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=False MAX_TOK=16384 MAX_RESP_LEN=15872 MAX_NEW_TOKENS=512 MAX_PROMPT_LEN=512 MAX_LEN_CTX=16384 TRAIN_BATCH_SIZE=16 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_7b_instruct_sc_belief_base_bsz_16s_512newtok_kl01_belief_prompt_diffmsg SC_BELIEF=True KL_COEF=0.01 SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MINI_BATCH_SIZE=16 MULTI_CONTEXT=False MAX_TOK=8096 MAX_RESP_LEN=7584 MAX_NEW_TOKENS=512 MAX_PROMPT_LEN=512 MAX_LEN_CTX=8096 TRAIN_BATCH_SIZE=16 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_7b_instruct_sc_belief_base_bsz_16s_512newtok_kl01_belief_prompt KL_COEF=0.01 SINGLE_MINI_BATCH=True DSET=interaction_simple_belief INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=False MAX_TOK=16384 MAX_RESP_LEN=15872 MAX_NEW_TOKENS=512 MAX_PROMPT_LEN=512 MAX_LEN_CTX=16384 TRAIN_BATCH_SIZE=16 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# CUDA_VISIBLE_DEVICES="4,5,6,7" DEBUG=q2_5_7b_instruct_sc_belief_base_bsz_256s_512newtok_kl01 KL_COEF=0.01 SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=False MICRO_BATCH_SIZE=4 MAX_TOK=16384 MAX_RESP_LEN=15872 MAX_NEW_TOKENS=512 MAX_PROMPT_LEN=512 MAX_LEN_CTX=16384 TRAIN_BATCH_SIZE=256 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_7b_instruct_sc_belief_base_bsz_16s_512newtok_kl01_belief_prompt_diffmsg_4belieflim_seed_2 SEED=2 SHUFFLE=True SC_BELIEF=True KL_COEF=0.01 SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MINI_BATCH_SIZE=16 MICRO_BATCH_SIZE=2 MULTI_CONTEXT=False MAX_TOK=8096 MAX_RESP_LEN=7584 MAX_NEW_TOKENS=512 MAX_PROMPT_LEN=512 MAX_LEN_CTX=8096 TRAIN_BATCH_SIZE=16 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_7b_instruct_sc_belief_base_bsz_16s_512newtok_kl01_vanilla_seed_4 SEED=4 SHUFFLE=True KL_COEF=0.01 SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=False MAX_TOK=16384 MAX_RESP_LEN=15872 MAX_NEW_TOKENS=512 MAX_PROMPT_LEN=512 MAX_LEN_CTX=16384 TRAIN_BATCH_SIZE=16 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+
+# DEBUG=q2_5_7b_instruct_mc_belief_base_bsz_32s_debug SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=32 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# DEBUG=q2_5_7b_instruct_mc_belief_base_bsz_16s_debug SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
+# CUDA_VISIBLE_DEVICES="4,5,6,7" DEBUG=q2_5_7b_instruct_mc_belief_base_bsz_16s_debug_fmt_12 FMT_PEN=12 SINGLE_MINI_BATCH=True DSET=interaction_base_base INSTRUCT=True B=7 GPUS=4 N_ROLLOUT=2 TP=1 MULTI_CONTEXT=True TRAIN_BATCH_SIZE=16 MAX_TOK=4096 MAX_LEN_CTX=2048 EPOCHS=5000 bash examples/sglang_multiturn/run_qwen2.5-xb_combolock_multiturn_w_interaction.sh
 python3 -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='combolock_multiturn_grpo_w_interaction' \
@@ -94,11 +111,13 @@ python3 -m verl.trainer.main_ppo \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.max_prompt_length=$MAX_PROMPT_LEN \
     data.max_response_length=$MAX_RESP_LEN \
+    data.shuffle=$SHUFFLE \
+    +data.seed=$SEED \
     actor_rollout_ref.rollout.max_model_len=$MAX_LEN_CTX \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=$MODEL_NAME \
+    actor_rollout_ref.model.path=$MODEL_NAME_OVERRIDE \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     +actor_rollout_ref.model.enable_activation_offloading=True \
@@ -107,7 +126,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOK \
     actor_rollout_ref.actor.use_kl_loss=True \
-    actor_rollout_ref.actor.kl_loss_coef=0.001 \
+    actor_rollout_ref.actor.kl_loss_coef=$KL_COEF \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.fsdp_config.param_offload=$OFFLOAD \
@@ -121,6 +140,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.n=$N_ROLLOUT \
     "actor_rollout_ref.rollout.multi_turn.force_thinking='$FORCE_THINKING'" \
     actor_rollout_ref.rollout.is_instruct_model=$INSTRUCT \
+    actor_rollout_ref.rollout.max_new_tokens=$MAX_NEW_TOKENS \
+    actor_rollout_ref.rollout.temperature=$TEMPERATURE \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.ref.fsdp_config.param_offload=$OFFLOAD \
     actor_rollout_ref.actor.use_dynamic_bsz=$DYNAMIC_BSZ \
@@ -129,7 +150,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl-tests' \
-    trainer.experiment_name=${MODEL_FAM}${QWEN}-${B}b_function_rm-combolock-sgl-multi-w-$DSET-n$N_ROLLOUT-2-$DEBUG \
+    trainer.experiment_name=${MODEL_FAM}${QWEN}-${B}b_function_rm-combolock-sgl-multi-w-$DSET-n$N_ROLLOUT-2-$DEBUG-seed-$SEED \
     trainer.n_gpus_per_node=$GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
@@ -138,10 +159,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.multi_turn.interaction_config_path="$PROJECT_DIR/examples/sglang_multiturn/config/interaction_config/combolock_interaction_config.yaml" \
     actor_rollout_ref.rollout.multi_turn.multi_context.enable=$MULTI_CONTEXT \
     actor_rollout_ref.rollout.multi_turn.multi_context.belief_state_construction_style=$BELIEF_STYLE \
+    actor_rollout_ref.rollout.multi_turn.multi_context.single_context_belief_generation=$SC_BELIEF \
     actor_rollout_ref.rollout.multi_turn.lax_format=$LAX_FORMAT \
     actor_rollout_ref.rollout.multi_turn.format_penalty_coef=$FMT_PEN \
     reward_model.reward_manager=multiturn \
     trainer.log_val_generations=10 \
+    trainer.val_before_train=False \
     trainer.test_freq=5 \
     +custom_reward_function.path=$PROJECT_DIR/verl/utils/reward_score/multiturn.py \
     trainer.total_epochs=$EPOCHS $@

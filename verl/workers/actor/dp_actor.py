@@ -80,6 +80,7 @@ class DataParallelPPOActor(BasePPOActor):
             else entropy_from_logits
         )
         self.device_name = get_device_name()
+        self.step_counter = 0
 
     def _forward_micro_batch(self, micro_batch, temperature, calculate_entropy=False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -372,6 +373,7 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             # if i want the mini batch to be all the datapoints, I just have to document the size of the number of batches, and use that...
             if self.config.single_mini_batch:
+                total_tokens = data_og.batch['loss_mask'].sum()
                 dataloader = [batch]
             else:
                 num_mini_batches = int(ceildiv(data_og.batch.batch_size[0], self.config.ppo_mini_batch_size))
@@ -416,8 +418,8 @@ class DataParallelPPOActor(BasePPOActor):
                     # split batch into micro_batches
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
                 # print([len(m) for m in micro_batches])
-                import pickle
-                pickle.dump((data_og, micro_batches), open(f"temp_rank_{torch.distributed.get_rank()}_index_{data_og.non_tensor_batch['index'][0]}.pkl", 'wb'))
+                # import pickle
+                # pickle.dump((data_og, micro_batches), open(f"temp_worldsize_{torch.distributed.get_world_size()}_rank_{torch.distributed.get_rank()}_index_{self.step_counter}.pkl", 'wb'))
                 self.actor_optimizer.zero_grad()
 
                 num_micro_batches = len(micro_batches)
@@ -497,8 +499,9 @@ class DataParallelPPOActor(BasePPOActor):
                             policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                             metrics["actor/kl_loss"] = kl_loss.detach().item()
                             metrics["actor/kl_coef"] = self.config.kl_loss_coef
-
-                        if self.config.use_dynamic_bsz:
+                        if self.config.single_mini_batch:
+                            loss = policy_loss * response_mask.sum() / total_tokens
+                        elif self.config.use_dynamic_bsz:
                             # relative to the dynamic bsz
                             loss = policy_loss * (len(data) / local_mini_batch_size)
                         else:
@@ -517,4 +520,5 @@ class DataParallelPPOActor(BasePPOActor):
                 data = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()
+        self.step_counter += 1
         return metrics
